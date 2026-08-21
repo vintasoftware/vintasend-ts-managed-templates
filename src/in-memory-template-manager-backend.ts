@@ -13,30 +13,15 @@
 
 import type { BaseTemplateManagerBackend } from './base-template-manager-backend.js';
 import { isAbstract } from './composition.js';
-import {
-  type ManagedTemplateStatus,
-  type ManagedTemplateTagStatus,
-  MOST_RECENT_ACTIVE_VERSION_STATUSES,
-} from './constants.js';
+import type { ManagedTemplateStatus, ManagedTemplateTagStatus } from './constants.js';
 import {
   ManagedTemplateInvalidTagError,
   ManagedTemplateNotFoundError,
   ManagedTemplateTagAlreadyExistsError,
   ManagedTemplateTagNotFoundError,
 } from './errors.js';
-import {
-  type DateRange,
-  type IntegerFieldFilter,
-  isFieldFilter,
-  isNumericFilterLookup,
-  isStatusExactLookup,
-  isStatusInLookup,
-  isStringFilterLookup,
-  type ManagedTemplateFilter,
-  type ManagedTemplateFilterFields,
-  type ManagedTemplateStatusFilter,
-  type StringFieldFilter,
-} from './filters.js';
+import { matchesTemplateFilter, paginate } from './filter-evaluation.js';
+import type { ManagedTemplateFilter } from './filters.js';
 import { nextAvailableSlug, normalizeTagText, slugifyTag } from './tags.js';
 import type {
   ManagedTemplate,
@@ -50,63 +35,6 @@ export type InMemoryTemplateManagerBackendOptions = {
   /** Overridden in tests so timestamps are deterministic. */
   now?: () => Date;
 };
-
-function matchesString(value: string, filter: StringFieldFilter): boolean {
-  if (!isStringFilterLookup(filter)) {
-    return value === filter;
-  }
-
-  const caseSensitive = filter.caseSensitive ?? true;
-  const haystack = caseSensitive ? value : value.toLowerCase();
-  const needle = caseSensitive ? filter.value : filter.value.toLowerCase();
-
-  switch (filter.lookup) {
-    case 'exact':
-      return haystack === needle;
-    case 'startsWith':
-      return haystack.startsWith(needle);
-    case 'endsWith':
-      return haystack.endsWith(needle);
-    case 'includes':
-      return haystack.includes(needle);
-  }
-}
-
-function matchesInteger(value: number, filter: IntegerFieldFilter): boolean {
-  if (!isNumericFilterLookup(filter)) {
-    return value === filter;
-  }
-  switch (filter.lookup) {
-    case 'gt':
-      return value > filter.value;
-    case 'gte':
-      return value >= filter.value;
-    case 'lt':
-      return value < filter.value;
-    case 'lte':
-      return value <= filter.value;
-  }
-}
-
-function matchesStatus(value: ManagedTemplateStatus, filter: ManagedTemplateStatusFilter): boolean {
-  if (isStatusInLookup(filter)) {
-    return filter.value.includes(value);
-  }
-  if (isStatusExactLookup(filter)) {
-    return value === filter.value;
-  }
-  return value === filter;
-}
-
-function matchesDateRange(value: Date, range: DateRange): boolean {
-  if (range.from !== undefined && value.getTime() < range.from.getTime()) {
-    return false;
-  }
-  if (range.to !== undefined && value.getTime() > range.to.getTime()) {
-    return false;
-  }
-  return true;
-}
 
 export class InMemoryTemplateManagerBackend implements BaseTemplateManagerBackend {
   private templates: ManagedTemplate[] = [];
@@ -471,106 +399,18 @@ export class InMemoryTemplateManagerBackend implements BaseTemplateManagerBacken
     }
   }
 
-  private matches(template: ManagedTemplate, filters: ManagedTemplateFilter): boolean {
-    if (!isFieldFilter(filters)) {
-      if ('and' in filters) {
-        return filters.and.every((sub) => this.matches(template, sub));
-      }
-      if ('or' in filters) {
-        return filters.or.some((sub) => this.matches(template, sub));
-      }
-      return !this.matches(template, filters.not);
-    }
-    return this.matchesFields(template, filters);
-  }
-
-  private matchesFields(template: ManagedTemplate, filters: ManagedTemplateFilterFields): boolean {
-    if (filters.name !== undefined && !matchesString(template.name, filters.name)) {
-      return false;
-    }
-    if (
-      filters.description !== undefined &&
-      !matchesString(template.description, filters.description)
-    ) {
-      return false;
-    }
-    if (filters.key !== undefined && !matchesString(template.key, filters.key)) {
-      return false;
-    }
-    if (
-      filters.templateManagedBackend !== undefined &&
-      !matchesString(template.templateManagedBackend, filters.templateManagedBackend)
-    ) {
-      return false;
-    }
-    if (filters.version !== undefined && !matchesInteger(template.version, filters.version)) {
-      return false;
-    }
-    if (filters.status !== undefined && !matchesStatus(template.status, filters.status)) {
-      return false;
-    }
-    if (
-      filters.createdAtRange !== undefined &&
-      !matchesDateRange(template.createdAt, filters.createdAtRange)
-    ) {
-      return false;
-    }
-    if (
-      filters.updatedAtRange !== undefined &&
-      !matchesDateRange(template.updatedAt, filters.updatedAtRange)
-    ) {
-      return false;
-    }
-    if (filters.includesAllTags !== undefined) {
-      const wanted = normalizeSlugs(filters.includesAllTags);
-      const carried = new Set(template.tags.map((tag) => tag.slug));
-      if (!wanted.every((slug) => carried.has(slug))) {
-        return false;
-      }
-    }
-    if (filters.includesAnyOfTags !== undefined) {
-      const wanted = normalizeSlugs(filters.includesAnyOfTags);
-      const carried = new Set(template.tags.map((tag) => tag.slug));
-      if (!wanted.some((slug) => carried.has(slug))) {
-        return false;
-      }
-    }
-    if (filters.isAbstract !== undefined && template.isAbstract !== filters.isAbstract) {
-      return false;
-    }
-    if (filters.mostRecentActiveVersion !== undefined) {
-      if (this.isMostRecentActiveVersion(template) !== filters.mostRecentActiveVersion) {
-        return false;
-      }
-    }
-    return true;
-  }
-
   /**
-   * Whether this row is its key's current version.
+   * Evaluate a filter over the whole store.
    *
-   * "This row is active or draft, and no active-or-draft row of the same key is numbered
-   * higher" — the one filter answered against the key rather than the row.
+   * The semantics live in `filter-evaluation`, shared with every backend that has to finish a
+   * filter its query language could not express — so this store and a FHIR one agree on what
+   * `includesAllTags: []` means without either of them re-deriving it.
    */
-  private isMostRecentActiveVersion(template: ManagedTemplate): boolean {
-    if (!MOST_RECENT_ACTIVE_VERSION_STATUSES.includes(template.status)) {
-      return false;
-    }
-    return !this.versionsOf(template.key).some(
-      (candidate) =>
-        MOST_RECENT_ACTIVE_VERSION_STATUSES.includes(candidate.status) &&
-        candidate.version > template.version,
-    );
+  private matches(template: ManagedTemplate, filters: ManagedTemplateFilter): boolean {
+    return matchesTemplateFilter(template, filters, {
+      versionsOfKey: (key) => this.versionsOf(key),
+    });
   }
-}
-
-function normalizeSlugs(tags: string[]): string[] {
-  return tags.map((tag) => slugifyTag(tag)).filter(Boolean);
-}
-
-function paginate<Row>(rows: Row[], page: number, pageSize: number): Row[] {
-  const start = (page - 1) * pageSize;
-  return rows.slice(start, start + pageSize);
 }
 
 function structuredCloneTemplate(template: ManagedTemplate): ManagedTemplate {

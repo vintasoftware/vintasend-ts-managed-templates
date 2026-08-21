@@ -41,6 +41,18 @@ export {
   ManagedTemplateTagAlreadyExistsError,
   ManagedTemplateTagNotFoundError,
 } from './errors.js';
+export type { FilterEvaluationContext } from './filter-evaluation.js';
+// Filter evaluation, for a backend that has to finish a filter its query language cannot express
+export {
+  isMostRecentActiveVersion,
+  matchesDateRange,
+  matchesInteger,
+  matchesStatus,
+  matchesString,
+  matchesTemplateFilter,
+  normalizeSlugs,
+  paginate,
+} from './filter-evaluation.js';
 export type {
   DateRange,
   IntegerFieldFilter,
