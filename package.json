@@ -1,12 +1,13 @@
 {
   "name": "vintasend-managed-templates",
   "version": "0.1.0",
-  "description": "Database-backed notification templates for VintaSend: versioning, a draft/active/inactive/archived lifecycle with an audit trail, tags, composition and filtering — on top of a storage seam you implement.",
+  "description": "Database-backed notification templates for VintaSend: versioning, a draft/active/inactive/archived lifecycle with an audit trail, tags, composition and filtering \u2014 on top of a storage seam you implement.",
   "type": "module",
   "main": "dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run build",
     "lint": "biome check .",
     "format": "biome check --write .",
