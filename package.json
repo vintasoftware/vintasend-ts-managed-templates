@@ -1,0 +1,40 @@
+{
+  "name": "vintasend-managed-templates",
+  "version": "0.1.0",
+  "description": "Database-backed notification templates for VintaSend: versioning, a draft/active/inactive/archived lifecycle with an audit trail, tags, composition and filtering — on top of a storage seam you implement.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "files": [
+    "dist"
+  ],
+  "author": "Vinta Software",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vintasoftware/vintasend-ts-managed-templates.git"
+  },
+  "dependencies": {
+    "vintasend": "^0.14.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.5",
+    "@types/node": "^25.0.8",
+    "@vitest/coverage-v8": "4.0.18",
+    "typescript": "^5.9.3",
+    "vitest": "4.0.18"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
