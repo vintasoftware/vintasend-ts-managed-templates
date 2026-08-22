@@ -328,10 +328,16 @@ const { version, rendered } = await renderer.renderManaged(notification, context
 Which version renders is decided in this order: an explicit `version` argument, then the
 notification's own `requestedTemplateVersion`, then whatever the backend considers current.
 
-VintaSend's `Notification` type carries no `requestedTemplateVersion` field yet, so the pin is read
-off the object rather than declared on it — a host that stores the pin (in its own column, or on an
-extended notification type) gets version-pinned rendering, and one that does not gets the current
-version, which is how every managed template rendered before pinning existed.
+`requestedTemplateVersion` is a first-class VintaSend field: pass it to `createNotification`, or
+let the service resolve it for you with `pinTemplateVersions`. This package is what makes it mean
+anything — `getLatestTemplateVersion` is how the service resolves "whatever is current right now",
+and it is overridden here to read the store.
+
+`render` also stamps the version it used onto the payload it returns, as `templateVersion`. An
+adapter returns that payload from `send()`, and the service records it on the notification as
+`usedTemplateVersion` — which on an unpinned notification is the only record of which version went
+out. See
+[Template Version Pinning](https://github.com/vintasoftware/vintasend-ts#template-version-pinning).
 
 ## Statuses
 

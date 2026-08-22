@@ -33,17 +33,21 @@ import type { ManagedTemplate } from './types.js';
 /**
  * A notification that names which version of its template it was recorded against.
  *
- * VintaSend's own `Notification` carries no such field yet, so it is read off the object rather
- * than declared on it: a host application that stores the pin (in its own column, or on an
- * extended notification type) gets version-pinned rendering, and one that does not gets whatever
- * version the backend considers current — which is how every managed template rendered before
- * pinning existed.
+ * VintaSend declares `requestedTemplateVersion` on its own notification types, so this is only
+ * the shape {@link requestedTemplateVersion} needs — kept exported for a host with a notification
+ * type of its own, and for reading a pin off a record that came from somewhere else.
  */
 export type VersionPinnedNotification = {
   requestedTemplateVersion?: number | null;
 };
 
-/** Read a notification's template-version pin, if it carries one. */
+/**
+ * Read a notification's template-version pin, if it carries one.
+ *
+ * Takes `unknown` rather than a notification type because it is also pointed at records that
+ * predate the field — a backend that never stored it hands back a notification with nothing
+ * there, and `null` is the right answer for those rather than a type error.
+ */
 export function requestedTemplateVersion(notification: unknown): number | null {
   const pin = (notification as VersionPinnedNotification | null)?.requestedTemplateVersion;
   return typeof pin === 'number' ? pin : null;
@@ -52,10 +56,10 @@ export function requestedTemplateVersion(notification: unknown): number | null {
 /**
  * What rendering a managed template produced, and which version produced it.
  *
- * The version is reported alongside the result rather than folded into it because VintaSend's
- * rendered types (`EmailTemplate`, `TextNotificationTemplate`) are the adapter's payload and have
- * no room for bookkeeping. This is the only way to find out afterwards which version an unpinned
- * notification went out with, so a caller that wants to record the pin reads it here.
+ * `render` also stamps the version onto the rendered payload itself, which is how VintaSend's
+ * service picks it up — see {@link ManagedTemplateRenderer.render}. This richer result is for a
+ * caller driving the render directly, where reading a documented field beats fishing an optional
+ * one off the payload.
  */
 export type ManagedTemplateRenderResult<RenderedType> = {
   key: string;
@@ -202,13 +206,33 @@ export abstract class ManagedTemplateRenderer<
    * Render a notification against the version it is pinned to, or the current one.
    *
    * This is the `BaseNotificationTemplateRenderer` seam VintaSend itself calls, so the rendered
-   * payload is all it can return. Call {@link renderManaged} instead when the version that was
-   * used matters — recording it against the notification, for one.
+   * payload is all it can return — and the version that produced it is stamped onto that payload
+   * as `templateVersion`. That is the channel VintaSend reads: an adapter returns the payload from
+   * `send()`, and the service records the version on the notification as `usedTemplateVersion`.
+   * On an unpinned notification it is the only record of which version went out, since the
+   * template has moved on by the time anyone asks.
+   *
+   * Call {@link renderManaged} instead when driving the render yourself and the version matters.
    */
   async render(notification: AnyNotification<Config>, context: JsonObject): Promise<RenderedType> {
     const result = await this.renderManaged(notification, context);
-    return result.rendered;
+    return withTemplateVersion(result.rendered, result.version);
   }
+}
+
+/**
+ * Stamp the version that rendered onto the payload, without mutating what the inner renderer
+ * returned.
+ *
+ * A renderer producing something that is not an object — nothing shipped does, but the seam is
+ * generic — is handed back untouched rather than wrapped, since there is nowhere to put the field
+ * and losing the payload would be the worse trade.
+ */
+function withTemplateVersion<RenderedType>(rendered: RenderedType, version: number): RenderedType {
+  if (rendered === null || typeof rendered !== 'object') {
+    return rendered;
+  }
+  return { ...rendered, templateVersion: version };
 }
 
 /** A managed-template renderer for email, feeding subject, body and preheader downstream. */

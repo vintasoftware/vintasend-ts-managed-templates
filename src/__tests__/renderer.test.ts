@@ -39,7 +39,25 @@ describe('rendering a stored template', () => {
 
     const rendered = await renderer.render(makeNotification('welcome'), { name: 'Ana' });
 
-    expect(rendered).toEqual({ subject: 'Welcome', body: '<p>Hi Ana</p>' });
+    // `templateVersion` rides along on the payload: that is the channel VintaSend reads it
+    // through, since an adapter returns the payload from `send()` and nothing richer.
+    expect(rendered).toEqual({
+      subject: 'Welcome',
+      body: '<p>Hi Ana</p>',
+      templateVersion: 1,
+    });
+  });
+
+  it('stamps the version that rendered onto the payload', async () => {
+    await backend.createTemplate(createInput('welcome'));
+    await backend.updateTemplate('welcome', { bodyTemplate: 'v2' });
+    const { renderer } = makeManagedEmailRenderer(backend);
+
+    const latest = await renderer.render(makeNotification('welcome'), {});
+    const pinned = await renderer.render(makeNotification('welcome', 1), {});
+
+    expect(latest.templateVersion).toBe(2);
+    expect(pinned.templateVersion).toBe(1);
   });
 
   it('reports which version rendered', async () => {
