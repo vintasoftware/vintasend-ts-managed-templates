@@ -446,18 +446,55 @@ says — so name the field yourself when a filtered listing should be one row pe
 
 ### Capabilities
 
-A backend declares only what it *cannot* do, and its report is merged over an all-`true` default:
+A backend declares only what it *cannot* do, and its report is merged over the library default:
 
 ```ts
 service.getBackendSupportedFilterCapabilities();
-// { 'logical.or': false, 'stringLookups.includes': false, ... }
+// { 'logical.or': false, 'stringLookups.includes': false, 'orderBy.name': false, ... }
 ```
 
 Read it to drop a filter a backend cannot honour rather than sending one it will ignore or throw
-on. There are deliberately no `orderBy.*` keys: the seam's paginated reads take no ordering
-argument, so there is nothing to negotiate. The two places an order is guaranteed are the ones the
-service sorts itself over a complete result set — version listings and status history — and both
-are unpaginated for exactly that reason.
+on.
+
+Most keys default to `true`, so a filter field added in a later release does not force every
+backend to re-declare support for it. **New vocabulary is the exception and defaults to `false`** —
+otherwise every backend that shipped before the field existed would claim a filter it silently
+ignores. Every `orderBy.*` key is in that category today.
+
+### Ordering
+
+`getPaginatedTemplates` and `getPaginatedFilteredTemplates` take an optional `orderBy`:
+
+```ts
+await service.getPaginatedTemplates(1, 20, false, { field: 'updatedAt', direction: 'desc' });
+```
+
+Orderable fields are `key`, `name`, `version`, `status`, `createdAt` and `updatedAt` — each a
+scalar the backend already stores per row, so a store can answer it from an index. Tags are absent
+because a many-to-many has no single value to compare, and `mostRecentActiveVersion` because it is
+a filter, not a field.
+
+**An order the backend cannot apply is refused, not dropped.** This is the one place the library
+does not follow the "drop what the backend cannot do" rule, and the asymmetry is deliberate:
+
+| | Unsupported filter | Unsupported order |
+|---|---|---|
+| If ignored | more rows come back than asked for | the same rows come back in an arbitrary sequence |
+| Can the caller tell? | yes — the rows are visibly wrong | no |
+
+So `ManagedTemplateService` throws `ManagedTemplateUnsupportedOrderingError`, naming the capability
+key. Ask first and offer only what the backend reports:
+
+```ts
+service.getSupportedOrderByFields(); // ['createdAt', 'updatedAt']
+```
+
+The order has to reach the store. Sorting a page after it has been chosen orders rows *within* the
+page while the rows selected *for* it came back in the backend's own order — correct-looking on
+page 1 and wrong on every page after it. A backend that holds the whole result set anyway can sort
+with `sortTemplates` from this package, which gives a **total, stable** order: every field breaks
+ties on `(key, version)`, and neither the tiebreak nor the placement of absent values flips with
+the direction, so a page boundary cannot move between two requests and drop or repeat a row.
 
 ## Implementing a manager backend
 

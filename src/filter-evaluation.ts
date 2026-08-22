@@ -22,6 +22,7 @@ import {
   isStringFilterLookup,
   type ManagedTemplateFilter,
   type ManagedTemplateFilterFields,
+  type ManagedTemplateOrderBy,
   type ManagedTemplateStatusFilter,
   type StringFieldFilter,
 } from './filters.js';
@@ -231,6 +232,100 @@ export function normalizeSlugs(tags: readonly string[]): string[] {
 }
 
 /** Slice a 1-indexed page out of a complete, ordered result set. */
+/**
+ * Order templates by one field, for a backend whose store cannot do it.
+ *
+ * Sorting in memory is only correct over a **complete** result set — sort a page and you order
+ * rows within it while the rows chosen for it came back in the store's own order. So this is for
+ * a backend that reads everything anyway, and such a backend must still report `orderBy.*`
+ * honestly: it can sort, so it says `true`.
+ *
+ * The sort is total and stable. Every field falls back to `(key, version)` on a tie, so two rows
+ * that compare equal on the named field still come back in the same order on every call — a page
+ * boundary that moves between two requests silently drops or repeats rows.
+ */
+export function sortTemplates(
+  templates: readonly ManagedTemplate[],
+  orderBy: ManagedTemplateOrderBy | undefined,
+): ManagedTemplate[] {
+  const rows = [...templates];
+  if (orderBy === undefined) {
+    return rows;
+  }
+
+  const sign = orderBy.direction === 'desc' ? -1 : 1;
+  return rows.sort((left, right) => {
+    // Absent values sort last in *both* directions, so this is compared before the sign is
+    // applied. `createdAt` and `updatedAt` are typed non-null, but a backend hydrating them from
+    // a store that allows null would otherwise put its nulls first on `desc` and last on `asc`.
+    const nullness = compareNullness(left, right, orderBy.field);
+    if (nullness !== 0) {
+      return nullness;
+    }
+    const primary = compareField(left, right, orderBy.field);
+    if (primary !== 0) {
+      return primary * sign;
+    }
+    // The tiebreak is *not* reversed either: it exists to make the order total, and flipping it
+    // with the direction would make `asc` and `desc` disagree on which of two equal rows comes
+    // first — which is how a page boundary starts dropping and repeating rows.
+    return compareTiebreak(left, right);
+  });
+}
+
+/** -1, 0 or 1 according to which side is missing a value for `field`; 0 when both have one. */
+function compareNullness(
+  left: ManagedTemplate,
+  right: ManagedTemplate,
+  field: ManagedTemplateOrderBy['field'],
+): number {
+  const leftMissing = (left[field] ?? null) === null;
+  const rightMissing = (right[field] ?? null) === null;
+  if (leftMissing === rightMissing) return 0;
+  return leftMissing ? 1 : -1;
+}
+
+function compareField(
+  left: ManagedTemplate,
+  right: ManagedTemplate,
+  field: ManagedTemplateOrderBy['field'],
+): number {
+  switch (field) {
+    case 'key':
+      return compareStrings(left.key, right.key);
+    case 'name':
+      return compareStrings(left.name, right.name);
+    case 'status':
+      return compareStrings(left.status, right.status);
+    case 'version':
+      return left.version - right.version;
+    case 'createdAt':
+      return compareDates(left.createdAt, right.createdAt);
+    case 'updatedAt':
+      return compareDates(left.updatedAt, right.updatedAt);
+  }
+}
+
+function compareTiebreak(left: ManagedTemplate, right: ManagedTemplate): number {
+  return compareStrings(left.key, right.key) || left.version - right.version;
+}
+
+/**
+ * Compare by code point rather than by locale.
+ *
+ * `localeCompare` would order rows differently depending on where the process runs, which for a
+ * paginated read means two pages of the same listing served by two machines can disagree.
+ */
+function compareStrings(left: string, right: string): number {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+/** Only reached with two present values — `compareNullness` has already settled the rest. */
+function compareDates(left: Date | null | undefined, right: Date | null | undefined): number {
+  return (left?.getTime() ?? 0) - (right?.getTime() ?? 0);
+}
+
 export function paginate<Row>(rows: readonly Row[], page: number, pageSize: number): Row[] {
   const start = (page - 1) * pageSize;
   return rows.slice(start, start + pageSize);

@@ -1,5 +1,9 @@
 import type { ManagedTemplateStatus, ManagedTemplateTagStatus } from './constants.js';
-import type { ManagedTemplateFilter, ManagedTemplateFilterCapabilities } from './filters.js';
+import type {
+  ManagedTemplateFilter,
+  ManagedTemplateFilterCapabilities,
+  ManagedTemplateOrderBy,
+} from './filters.js';
 import type {
   ManagedTemplate,
   ManagedTemplateCreateInput,
@@ -238,12 +242,25 @@ export interface BaseTemplateManagerBackend {
    *   unlike `vintasend`'s notification backends there is no per-backend page numbering to
    *   negotiate.
    */
-  getPaginatedTemplates(page: number, pageSize: number): Promise<ManagedTemplate[]>;
+  getPaginatedTemplates(
+    page: number,
+    pageSize: number,
+    orderBy?: ManagedTemplateOrderBy,
+  ): Promise<ManagedTemplate[]>;
 
-  /** One page of the templates matching `filters`. `page` is 1-indexed. */
+  /**
+   * One page of the templates matching `filters`. `page` is 1-indexed.
+   *
+   * `orderBy` is optional and every `orderBy.*` capability defaults to false, so a backend
+   * written before ordering existed keeps compiling and keeps its honest report. A backend that
+   * *does* accept it must apply the order to the whole result set before paging, and must
+   * declare the fields it can order by — a page sorted after it was chosen is sorted within
+   * itself and wrong across page boundaries.
+   */
   getPaginatedFilteredTemplates(
     filters: ManagedTemplateFilter,
     page: number,
     pageSize: number,
+    orderBy?: ManagedTemplateOrderBy,
   ): Promise<ManagedTemplate[]>;
 }

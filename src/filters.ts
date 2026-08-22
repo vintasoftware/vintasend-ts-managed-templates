@@ -212,17 +212,57 @@ export function isTagsFilter(value: unknown): value is TagsFieldFilter {
  * added in a later release does not force every backend to re-declare support for it, and a
  * missing key means "supported".
  *
- * There are deliberately no `orderBy.*` keys. `BaseTemplateManagerBackend`'s paginated reads
- * take `filters`, `page` and `pageSize` and no ordering argument, so an order can never reach
- * the store — sorting a page after the fact would order rows *within* a page while the rows
- * chosen *for* it stayed in the backend's own order, which is correct-looking on page 1 and
- * wrong everywhere after it. The two places an order is guaranteed are the ones
- * `ManagedTemplateService` sorts itself over a complete result set: version listings and status
- * history, both unpaginated for exactly that reason.
+ * `orderBy.*` keys report which fields a backend can sort a page by. They are new vocabulary, so
+ * they default to **false**: a backend that predates ordering ignores the argument, and claiming
+ * an order it does not apply is worse than admitting it cannot — a caller that knows gets to
+ * decide, while one that is lied to silently renders rows in an arbitrary order and calls it
+ * sorted.
+ *
+ * Ordering has to reach the store rather than being applied to the page afterwards. Sorting a
+ * page after the fact orders rows *within* the page while the rows chosen *for* it stayed in the
+ * backend's own order, which looks right on page 1 and is wrong everywhere after it.
  */
 export type ManagedTemplateFilterCapabilities = {
   [key: string]: boolean;
 };
+
+/**
+ * The fields a template listing can be ordered by.
+ *
+ * Deliberately narrow: each one is a scalar the backend already stores per row, so a store can
+ * answer it with an index rather than a computed sort. `tags` is absent because ordering by a
+ * many-to-many has no single value to compare, and `mostRecentActiveVersion` because it is a
+ * filter rather than a field.
+ */
+export type ManagedTemplateOrderByField =
+  | 'key'
+  | 'name'
+  | 'version'
+  | 'status'
+  | 'createdAt'
+  | 'updatedAt';
+
+export type ManagedTemplateOrderDirection = 'asc' | 'desc';
+
+export type ManagedTemplateOrderBy = {
+  field: ManagedTemplateOrderByField;
+  direction: ManagedTemplateOrderDirection;
+};
+
+/** Every orderable field, for validation and for building a capability report. */
+export const MANAGED_TEMPLATE_ORDER_BY_FIELDS: readonly ManagedTemplateOrderByField[] = [
+  'key',
+  'name',
+  'version',
+  'status',
+  'createdAt',
+  'updatedAt',
+];
+
+/** The capability key reporting whether a backend can order by `field`. */
+export function orderByCapabilityKey(field: ManagedTemplateOrderByField): string {
+  return `orderBy.${field}`;
+}
 
 export const DEFAULT_TEMPLATE_BACKEND_FILTER_CAPABILITIES: ManagedTemplateFilterCapabilities = {
   // Composition. A backend that can evaluate field filters but not assemble them into
@@ -270,6 +310,15 @@ export const DEFAULT_TEMPLATE_BACKEND_FILTER_CAPABILITIES: ManagedTemplateFilter
   // constraint worth reporting. Read the key you actually mean.
   'stringLookups.caseSensitive': true,
   'stringLookups.caseInsensitive': true,
+  // Ordering is new vocabulary rather than behaviour backends already have, so every key
+  // defaults to false. A backend that predates the ordering argument ignores it, and a `true`
+  // default would have it claim an order it never applies.
+  'orderBy.key': false,
+  'orderBy.name': false,
+  'orderBy.version': false,
+  'orderBy.status': false,
+  'orderBy.createdAt': false,
+  'orderBy.updatedAt': false,
 };
 
 /**
