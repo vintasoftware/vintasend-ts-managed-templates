@@ -63,6 +63,7 @@ import {
   type ManagedTemplateOrderBy,
   type ManagedTemplateOrderByField,
   orderByCapabilityKey,
+  pruneUnsupportedFilters,
   TAG_FILTER_FIELDS,
 } from './filters.js';
 import type {
@@ -638,7 +639,22 @@ export class ManagedTemplateService<
    */
   async getFilteredTemplates(filters: ManagedTemplateFilter): Promise<ManagedTemplate[]> {
     this.validateFilter(filters);
-    return this.templateManagerBackend.getFilteredTemplates(filters);
+    return this.templateManagerBackend.getFilteredTemplates(this.negotiate(filters));
+  }
+
+  /**
+   * The filter with everything the backend cannot answer removed.
+   *
+   * A capability report nothing acts on is decoration, and every caller left to walk the map
+   * itself would reach a slightly different conclusion. Dropping only ever widens the result, so
+   * the failure mode is extra rows a caller can see — `getAllTemplates()` against a backend that
+   * cannot answer `mostRecentActiveVersion` returns every version rather than throwing.
+   *
+   * Ordering is *not* negotiated here. It is refused instead, because dropping it leaves no
+   * trace in the rows for a caller to notice.
+   */
+  private negotiate(filters: ManagedTemplateFilter): ManagedTemplateFilter {
+    return pruneUnsupportedFilters(filters, this.getBackendSupportedFilterCapabilities());
   }
 
   /**
@@ -675,7 +691,7 @@ export class ManagedTemplateService<
     ManagedTemplateService.validatePagination(page, pageSize);
     this.validateOrderBy(orderBy);
     return this.templateManagerBackend.getPaginatedFilteredTemplates(
-      filters,
+      this.negotiate(filters),
       page,
       pageSize,
       orderBy,

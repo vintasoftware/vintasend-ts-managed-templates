@@ -75,6 +75,7 @@ export {
   DEFAULT_TEMPLATE_BACKEND_FILTER_CAPABILITIES,
   FLAG_FILTER_FIELDS,
   isDateRange,
+  isEmptyFilter,
   isFieldFilter,
   isNumericFilterLookup,
   isStatusExactLookup,
@@ -84,6 +85,7 @@ export {
   KNOWN_FILTER_FIELDS,
   MANAGED_TEMPLATE_ORDER_BY_FIELDS,
   orderByCapabilityKey,
+  pruneUnsupportedFilters,
   supportsCapability,
   TAG_FILTER_FIELDS,
 } from './filters.js';
