@@ -40,6 +40,7 @@ export {
   ManagedTemplateStatusTransitionError,
   ManagedTemplateTagAlreadyExistsError,
   ManagedTemplateTagNotFoundError,
+  ManagedTemplateUnsupportedOrderingError,
 } from './errors.js';
 export type { FilterEvaluationContext } from './filter-evaluation.js';
 // Filter evaluation, for a backend that has to finish a filter its query language cannot express
@@ -52,6 +53,7 @@ export {
   matchesTemplateFilter,
   normalizeSlugs,
   paginate,
+  sortTemplates,
 } from './filter-evaluation.js';
 export type {
   DateRange,
@@ -59,6 +61,9 @@ export type {
   ManagedTemplateFilter,
   ManagedTemplateFilterCapabilities,
   ManagedTemplateFilterFields,
+  ManagedTemplateOrderBy,
+  ManagedTemplateOrderByField,
+  ManagedTemplateOrderDirection,
   ManagedTemplateStatusFilter,
   NumericFilterLookup,
   StringFieldFilter,
@@ -70,6 +75,7 @@ export {
   DEFAULT_TEMPLATE_BACKEND_FILTER_CAPABILITIES,
   FLAG_FILTER_FIELDS,
   isDateRange,
+  isEmptyFilter,
   isFieldFilter,
   isNumericFilterLookup,
   isStatusExactLookup,
@@ -77,6 +83,9 @@ export {
   isStringFilterLookup,
   isTagsFilter,
   KNOWN_FILTER_FIELDS,
+  MANAGED_TEMPLATE_ORDER_BY_FIELDS,
+  orderByCapabilityKey,
+  pruneUnsupportedFilters,
   supportsCapability,
   TAG_FILTER_FIELDS,
 } from './filters.js';

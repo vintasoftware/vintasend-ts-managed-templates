@@ -20,8 +20,14 @@ import {
   ManagedTemplateTagAlreadyExistsError,
   ManagedTemplateTagNotFoundError,
 } from './errors.js';
-import { matchesTemplateFilter, paginate } from './filter-evaluation.js';
-import type { ManagedTemplateFilter } from './filters.js';
+import { matchesTemplateFilter, paginate, sortTemplates } from './filter-evaluation.js';
+import {
+  MANAGED_TEMPLATE_ORDER_BY_FIELDS,
+  type ManagedTemplateFilter,
+  type ManagedTemplateFilterCapabilities,
+  type ManagedTemplateOrderBy,
+  orderByCapabilityKey,
+} from './filters.js';
 import { nextAvailableSlug, normalizeTagText, slugifyTag } from './tags.js';
 import type {
   ManagedTemplate,
@@ -289,16 +295,39 @@ export class InMemoryTemplateManagerBackend implements BaseTemplateManagerBacken
       .map(structuredCloneTemplate);
   }
 
-  async getPaginatedTemplates(page: number, pageSize: number): Promise<ManagedTemplate[]> {
-    return paginate(await this.getAllTemplates(), page, pageSize);
+  /**
+   * Everything, including every order.
+   *
+   * This backend holds the whole store in memory, so it can sort a complete result set before
+   * paging it — which is what ordering requires. It therefore declares the `orderBy.*` keys
+   * explicitly: they default to false, and a backend that can genuinely do it has to say so.
+   */
+  getFilterCapabilities(): ManagedTemplateFilterCapabilities {
+    return Object.fromEntries(
+      MANAGED_TEMPLATE_ORDER_BY_FIELDS.map((field) => [orderByCapabilityKey(field), true]),
+    );
+  }
+
+  async getPaginatedTemplates(
+    page: number,
+    pageSize: number,
+    orderBy?: ManagedTemplateOrderBy,
+  ): Promise<ManagedTemplate[]> {
+    return paginate(sortTemplates(await this.getAllTemplates(), orderBy), page, pageSize);
   }
 
   async getPaginatedFilteredTemplates(
     filters: ManagedTemplateFilter,
     page: number,
     pageSize: number,
+    orderBy?: ManagedTemplateOrderBy,
   ): Promise<ManagedTemplate[]> {
-    return paginate(await this.getFilteredTemplates(filters), page, pageSize);
+    // Sorted before paging, never after: the page has to be chosen from an ordered set.
+    return paginate(
+      sortTemplates(await this.getFilteredTemplates(filters), orderBy),
+      page,
+      pageSize,
+    );
   }
 
   // -------------------------------------------------------------------------------------------

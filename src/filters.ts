@@ -212,17 +212,57 @@ export function isTagsFilter(value: unknown): value is TagsFieldFilter {
  * added in a later release does not force every backend to re-declare support for it, and a
  * missing key means "supported".
  *
- * There are deliberately no `orderBy.*` keys. `BaseTemplateManagerBackend`'s paginated reads
- * take `filters`, `page` and `pageSize` and no ordering argument, so an order can never reach
- * the store — sorting a page after the fact would order rows *within* a page while the rows
- * chosen *for* it stayed in the backend's own order, which is correct-looking on page 1 and
- * wrong everywhere after it. The two places an order is guaranteed are the ones
- * `ManagedTemplateService` sorts itself over a complete result set: version listings and status
- * history, both unpaginated for exactly that reason.
+ * `orderBy.*` keys report which fields a backend can sort a page by. They are new vocabulary, so
+ * they default to **false**: a backend that predates ordering ignores the argument, and claiming
+ * an order it does not apply is worse than admitting it cannot — a caller that knows gets to
+ * decide, while one that is lied to silently renders rows in an arbitrary order and calls it
+ * sorted.
+ *
+ * Ordering has to reach the store rather than being applied to the page afterwards. Sorting a
+ * page after the fact orders rows *within* the page while the rows chosen *for* it stayed in the
+ * backend's own order, which looks right on page 1 and is wrong everywhere after it.
  */
 export type ManagedTemplateFilterCapabilities = {
   [key: string]: boolean;
 };
+
+/**
+ * The fields a template listing can be ordered by.
+ *
+ * Deliberately narrow: each one is a scalar the backend already stores per row, so a store can
+ * answer it with an index rather than a computed sort. `tags` is absent because ordering by a
+ * many-to-many has no single value to compare, and `mostRecentActiveVersion` because it is a
+ * filter rather than a field.
+ */
+export type ManagedTemplateOrderByField =
+  | 'key'
+  | 'name'
+  | 'version'
+  | 'status'
+  | 'createdAt'
+  | 'updatedAt';
+
+export type ManagedTemplateOrderDirection = 'asc' | 'desc';
+
+export type ManagedTemplateOrderBy = {
+  field: ManagedTemplateOrderByField;
+  direction: ManagedTemplateOrderDirection;
+};
+
+/** Every orderable field, for validation and for building a capability report. */
+export const MANAGED_TEMPLATE_ORDER_BY_FIELDS: readonly ManagedTemplateOrderByField[] = [
+  'key',
+  'name',
+  'version',
+  'status',
+  'createdAt',
+  'updatedAt',
+];
+
+/** The capability key reporting whether a backend can order by `field`. */
+export function orderByCapabilityKey(field: ManagedTemplateOrderByField): string {
+  return `orderBy.${field}`;
+}
 
 export const DEFAULT_TEMPLATE_BACKEND_FILTER_CAPABILITIES: ManagedTemplateFilterCapabilities = {
   // Composition. A backend that can evaluate field filters but not assemble them into
@@ -270,7 +310,117 @@ export const DEFAULT_TEMPLATE_BACKEND_FILTER_CAPABILITIES: ManagedTemplateFilter
   // constraint worth reporting. Read the key you actually mean.
   'stringLookups.caseSensitive': true,
   'stringLookups.caseInsensitive': true,
+  // Ordering is new vocabulary rather than behaviour backends already have, so every key
+  // defaults to false. A backend that predates the ordering argument ignores it, and a `true`
+  // default would have it claim an order it never applies.
+  'orderBy.key': false,
+  'orderBy.name': false,
+  'orderBy.version': false,
+  'orderBy.status': false,
+  'orderBy.createdAt': false,
+  'orderBy.updatedAt': false,
 };
+
+/**
+ * Drop the parts of a filter the backend has declared it cannot answer.
+ *
+ * This is the other half of the capability report: reporting a limitation is only useful if
+ * something acts on it. Every caller that builds a filter would otherwise have to walk the
+ * capability map itself and reach its own conclusions, and they would disagree.
+ *
+ * **Dropping widens.** A pruned filter matches everything the original did and possibly more, so
+ * a caller sees extra rows rather than missing ones — a listing that could not collapse to one
+ * row per key shows every version, which is visible in the result. That is the whole reason
+ * filters are negotiated by dropping while *ordering* is negotiated by refusing: an ignored order
+ * leaves no trace in the rows at all. Check the report before trusting a filter to have narrowed.
+ *
+ * Returns an empty filter — which constrains nothing — when everything has been dropped.
+ */
+export function pruneUnsupportedFilters(
+  filter: ManagedTemplateFilter,
+  capabilities: ManagedTemplateFilterCapabilities,
+): ManagedTemplateFilter {
+  const can = (key: string) => supportsCapability(capabilities, key);
+
+  if (isFieldFilter(filter)) {
+    return pruneFields(filter, can);
+  }
+
+  if ('and' in filter) {
+    if (!can('logical.and')) {
+      return {};
+    }
+    const kept = filter.and
+      .map((inner) => pruneUnsupportedFilters(inner, capabilities))
+      .filter((inner) => !isEmptyFilter(inner));
+    if (kept.length === 0) return {};
+    // A one-element `and` is the element: fewer groups for a backend to translate.
+    return kept.length === 1 ? (kept[0] as ManagedTemplateFilter) : { and: kept };
+  }
+
+  if ('or' in filter) {
+    // An `or` cannot be partially dropped. Removing one branch of a disjunction *narrows* the
+    // result — the opposite of what dropping is allowed to do — so the whole group goes, and
+    // with it the constraint.
+    if (!can('logical.or')) {
+      return {};
+    }
+    const kept = filter.or.map((inner) => pruneUnsupportedFilters(inner, capabilities));
+    // If any branch pruned down to "everything", the disjunction is satisfied by every row.
+    if (kept.some(isEmptyFilter)) return {};
+    return { or: kept };
+  }
+
+  if (!can('logical.not')) {
+    return {};
+  }
+  const inner = pruneUnsupportedFilters(filter.not, capabilities);
+  // Negating "everything" is "nothing", which is not a widening — drop it instead.
+  if (isEmptyFilter(inner)) return {};
+  if (!isFieldFilter(inner) && !can('logical.notNested')) return {};
+  return { not: inner };
+}
+
+/** True for a filter that constrains nothing, whatever shape it arrived in. */
+export function isEmptyFilter(filter: ManagedTemplateFilter): boolean {
+  if (isFieldFilter(filter)) {
+    return Object.values(filter).every((value) => value === undefined);
+  }
+  if ('and' in filter) return filter.and.every(isEmptyFilter);
+  if ('or' in filter) return filter.or.every(isEmptyFilter);
+  return isEmptyFilter(filter.not);
+}
+
+function pruneFields(
+  fields: ManagedTemplateFilterFields,
+  can: (key: string) => boolean,
+): ManagedTemplateFilterFields {
+  const kept: Record<string, unknown> = {};
+
+  for (const field of KNOWN_FILTER_FIELDS) {
+    const value = (fields as Record<string, unknown>)[field];
+    if (value === undefined) continue;
+    if (!can(`fields.${field}`)) continue;
+    if (isStringFilterLookup(value) && !supportedStringLookup(value, can)) continue;
+    // A bare string means exact and case-sensitive.
+    if (
+      typeof value === 'string' &&
+      !(can('stringLookups.exact') && can('stringLookups.caseSensitive'))
+    ) {
+      continue;
+    }
+    kept[field] = value;
+  }
+
+  return kept as ManagedTemplateFilterFields;
+}
+
+function supportedStringLookup(filter: StringFilterLookup, can: (key: string) => boolean): boolean {
+  if (!can(`stringLookups.${filter.lookup}`)) return false;
+  return filter.caseSensitive === false
+    ? can('stringLookups.caseInsensitive')
+    : can('stringLookups.caseSensitive');
+}
 
 /**
  * Read one capability, defaulting to supported.

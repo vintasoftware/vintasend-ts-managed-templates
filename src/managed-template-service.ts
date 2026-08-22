@@ -48,6 +48,7 @@ import {
   ManagedTemplateInvalidFilterError,
   ManagedTemplateInvalidTagError,
   ManagedTemplateStatusTransitionError,
+  ManagedTemplateUnsupportedOrderingError,
 } from './errors.js';
 import {
   DEFAULT_TEMPLATE_BACKEND_FILTER_CAPABILITIES,
@@ -55,9 +56,14 @@ import {
   isFieldFilter,
   isTagsFilter,
   KNOWN_FILTER_FIELDS,
+  MANAGED_TEMPLATE_ORDER_BY_FIELDS,
   type ManagedTemplateFilter,
   type ManagedTemplateFilterCapabilities,
   type ManagedTemplateFilterFields,
+  type ManagedTemplateOrderBy,
+  type ManagedTemplateOrderByField,
+  orderByCapabilityKey,
+  pruneUnsupportedFilters,
   TAG_FILTER_FIELDS,
 } from './filters.js';
 import type {
@@ -633,7 +639,22 @@ export class ManagedTemplateService<
    */
   async getFilteredTemplates(filters: ManagedTemplateFilter): Promise<ManagedTemplate[]> {
     this.validateFilter(filters);
-    return this.templateManagerBackend.getFilteredTemplates(filters);
+    return this.templateManagerBackend.getFilteredTemplates(this.negotiate(filters));
+  }
+
+  /**
+   * The filter with everything the backend cannot answer removed.
+   *
+   * A capability report nothing acts on is decoration, and every caller left to walk the map
+   * itself would reach a slightly different conclusion. Dropping only ever widens the result, so
+   * the failure mode is extra rows a caller can see — `getAllTemplates()` against a backend that
+   * cannot answer `mostRecentActiveVersion` returns every version rather than throwing.
+   *
+   * Ordering is *not* negotiated here. It is refused instead, because dropping it leaves no
+   * trace in the rows for a caller to notice.
+   */
+  private negotiate(filters: ManagedTemplateFilter): ManagedTemplateFilter {
+    return pruneUnsupportedFilters(filters, this.getBackendSupportedFilterCapabilities());
   }
 
   /**
@@ -645,12 +666,14 @@ export class ManagedTemplateService<
     page: number,
     pageSize: number,
     includeAllVersions = false,
+    orderBy?: ManagedTemplateOrderBy,
   ): Promise<ManagedTemplate[]> {
     ManagedTemplateService.validatePagination(page, pageSize);
+    this.validateOrderBy(orderBy);
     if (includeAllVersions) {
-      return this.templateManagerBackend.getPaginatedTemplates(page, pageSize);
+      return this.templateManagerBackend.getPaginatedTemplates(page, pageSize, orderBy);
     }
-    return this.getPaginatedFilteredTemplates(currentVersionsOnly(), page, pageSize);
+    return this.getPaginatedFilteredTemplates(currentVersionsOnly(), page, pageSize, orderBy);
   }
 
   /**
@@ -662,10 +685,59 @@ export class ManagedTemplateService<
     filters: ManagedTemplateFilter,
     page: number,
     pageSize: number,
+    orderBy?: ManagedTemplateOrderBy,
   ): Promise<ManagedTemplate[]> {
     this.validateFilter(filters);
     ManagedTemplateService.validatePagination(page, pageSize);
-    return this.templateManagerBackend.getPaginatedFilteredTemplates(filters, page, pageSize);
+    this.validateOrderBy(orderBy);
+    return this.templateManagerBackend.getPaginatedFilteredTemplates(
+      this.negotiate(filters),
+      page,
+      pageSize,
+      orderBy,
+    );
+  }
+
+  /**
+   * Refuse an order the backend cannot apply, rather than passing it on to be ignored.
+   *
+   * Unlike an unsupported filter — which a caller drops, getting more rows than it asked for and
+   * being able to tell — an ignored order returns exactly the rows requested in an arbitrary
+   * sequence. Nothing downstream can detect that, so the only honest options are to apply it or
+   * to refuse, and the backend has already said which one this is.
+   */
+  validateOrderBy(orderBy: ManagedTemplateOrderBy | undefined): void {
+    if (orderBy === undefined) {
+      return;
+    }
+    if (!MANAGED_TEMPLATE_ORDER_BY_FIELDS.includes(orderBy.field)) {
+      throw new ManagedTemplateUnsupportedOrderingError(
+        `'${orderBy.field}' is not an orderable field. Order by one of: ` +
+          `${MANAGED_TEMPLATE_ORDER_BY_FIELDS.join(', ')}.`,
+      );
+    }
+    if (orderBy.direction !== 'asc' && orderBy.direction !== 'desc') {
+      throw new ManagedTemplateUnsupportedOrderingError(
+        `'${orderBy.direction}' is not a sort direction. Use 'asc' or 'desc'.`,
+      );
+    }
+
+    const key = orderByCapabilityKey(orderBy.field);
+    if (!this.getBackendSupportedFilterCapabilities()[key]) {
+      throw new ManagedTemplateUnsupportedOrderingError(
+        `The configured template backend cannot order by '${orderBy.field}' ` +
+          `(${key} is false). Read getBackendSupportedFilterCapabilities() and offer only the ` +
+          'fields it reports.',
+      );
+    }
+  }
+
+  /** Every field this backend can order a listing by, in vocabulary order. */
+  getSupportedOrderByFields(): ManagedTemplateOrderByField[] {
+    const capabilities = this.getBackendSupportedFilterCapabilities();
+    return MANAGED_TEMPLATE_ORDER_BY_FIELDS.filter(
+      (field) => capabilities[orderByCapabilityKey(field)] === true,
+    );
   }
 
   /**

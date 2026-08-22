@@ -20,6 +20,16 @@ export class ManagedTemplateNotFoundError extends ManagedTemplateError {}
 /** Raised when a filter is malformed or names a field the vocabulary does not have. */
 export class ManagedTemplateInvalidFilterError extends ManagedTemplateError {}
 
+/**
+ * Raised when a listing asks for an order the configured backend cannot apply.
+ *
+ * This throws rather than quietly dropping the order, which is the difference between ordering
+ * and filtering: a dropped filter returns more rows than asked for, which a caller can see, while
+ * a dropped order returns the same rows in an arbitrary sequence that looks sorted. Read
+ * `getBackendSupportedFilterCapabilities()` and offer only the fields it reports.
+ */
+export class ManagedTemplateUnsupportedOrderingError extends ManagedTemplateError {}
+
 /** Raised when a status change is attributed to a user the backend cannot resolve. */
 export class ManagedTemplateChangeUserNotFoundError extends ManagedTemplateError {}
 
