@@ -1,6 +1,6 @@
 {
   "name": "vintasend-managed-templates",
-  "version": "1.0.0-alpha2",
+  "version": "1.0.0-alpha3",
   "description": "Database-backed notification templates for VintaSend: versioning, a draft/active/inactive/archived lifecycle with an audit trail, tags, composition and filtering — on top of a storage seam you implement.",
   "type": "module",
   "main": "dist/index.js",
@@ -26,7 +26,7 @@
     "url": "git+https://github.com/vintasoftware/vintasend-ts-managed-templates.git"
   },
   "dependencies": {
-    "vintasend": "^1.0.0-alpha2"
+    "vintasend": "^1.0.0-alpha3"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.10",
