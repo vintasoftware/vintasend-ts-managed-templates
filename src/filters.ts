@@ -137,6 +137,22 @@ export const TAG_FILTER_FIELDS = ['includesAllTags', 'includesAnyOfTags'] as con
 /** The filter fields whose value is a bare boolean. */
 export const FLAG_FILTER_FIELDS = ['mostRecentActiveVersion', 'isAbstract'] as const;
 
+/**
+ * The filter fields whose value is a string match rather than a token, a range or a flag — the
+ * only ones the `stringLookups.*` capabilities have anything to say about.
+ *
+ * `status` is deliberately absent. It is a string union, so it passes `typeof value === 'string'`
+ * and `isStringFilterLookup`, but it is matched as a token — `matchesStatus`, not `matchesString`
+ * — and no string-comparison capability constrains it. Gating on the field name rather than on the
+ * value's shape is what keeps the pruner agreeing with the evaluator.
+ */
+const STRING_LOOKUP_FIELDS: readonly string[] = [
+  'name',
+  'description',
+  'key',
+  'templateManagedBackend',
+];
+
 const LOGICAL_KEYS = ['and', 'or', 'not'] as const;
 const STRING_LOOKUPS = ['exact', 'startsWith', 'endsWith', 'includes'];
 const NUMERIC_LOOKUPS = ['gt', 'gte', 'lt', 'lte'];
@@ -401,13 +417,15 @@ function pruneFields(
     const value = (fields as Record<string, unknown>)[field];
     if (value === undefined) continue;
     if (!can(`fields.${field}`)) continue;
-    if (isStringFilterLookup(value) && !supportedStringLookup(value, can)) continue;
-    // A bare string means exact and case-sensitive.
-    if (
-      typeof value === 'string' &&
-      !(can('stringLookups.exact') && can('stringLookups.caseSensitive'))
-    ) {
-      continue;
+    if (STRING_LOOKUP_FIELDS.includes(field)) {
+      if (isStringFilterLookup(value) && !supportedStringLookup(value, can)) continue;
+      // A bare string means exact and case-sensitive.
+      if (
+        typeof value === 'string' &&
+        !(can('stringLookups.exact') && can('stringLookups.caseSensitive'))
+      ) {
+        continue;
+      }
     }
     kept[field] = value;
   }

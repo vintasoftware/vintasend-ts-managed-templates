@@ -82,6 +82,63 @@ describe('fields', () => {
   });
 });
 
+describe('status is a token, not a string', () => {
+  // A status is matched by `matchesStatus`, not `matchesString` — it is enum equality on a wire
+  // value, and no collation affects it. The `stringLookups.*` keys describe how a store compares
+  // *text*, so none of them has anything to say about a status filter. `fields.status` does.
+
+  it('keeps a bare status against a case-insensitive-only backend', () => {
+    expect(prune({ status: 'active' }, { 'stringLookups.caseSensitive': false })).toEqual({
+      status: 'active',
+    });
+  });
+
+  it('keeps a bare status against a backend that declines exact string matching', () => {
+    expect(prune({ status: 'active' }, { 'stringLookups.exact': false })).toEqual({
+      status: 'active',
+    });
+  });
+
+  it('keeps an exact status lookup against a case-insensitive-only backend', () => {
+    const filter: ManagedTemplateFilter = { status: { lookup: 'exact', value: 'active' } };
+
+    expect(prune(filter, { 'stringLookups.caseSensitive': false })).toEqual(filter);
+  });
+
+  it('keeps an exact status lookup against a backend that declines exact string matching', () => {
+    const filter: ManagedTemplateFilter = { status: { lookup: 'exact', value: 'active' } };
+
+    expect(prune(filter, { 'stringLookups.exact': false })).toEqual(filter);
+  });
+
+  it('negotiates both spellings of a status filter the same way', () => {
+    // `{ lookup: 'in' }` always survived, because `in` is not a string lookup. The `exact` form
+    // says the same thing about one value, and used to be dropped instead.
+    const capabilities = { 'stringLookups.exact': false, 'stringLookups.caseSensitive': false };
+
+    expect(prune({ status: { lookup: 'in', value: ['active'] } }, capabilities)).not.toEqual({});
+    expect(prune({ status: { lookup: 'exact', value: 'active' } }, capabilities)).not.toEqual({});
+  });
+
+  it('still drops a status the backend cannot filter on at all', () => {
+    // `fields.status` is the capability that does govern a status filter.
+    expect(prune({ status: 'active' }, { 'fields.status': false })).toEqual({});
+    expect(
+      prune({ status: { lookup: 'exact', value: 'active' } }, { 'fields.status': false }),
+    ).toEqual({});
+  });
+
+  it('still drops a genuine string field against the same backend', () => {
+    // The control. A fix that stopped pruning string lookups altogether would pass every case
+    // above and fail this one: `name` *is* text, so a store that cannot compare it
+    // case-sensitively cannot answer a bare `name` filter.
+    expect(prune({ name: 'Welcome' }, { 'stringLookups.caseSensitive': false })).toEqual({});
+    expect(
+      prune({ name: { lookup: 'endsWith', value: 'ome' } }, { 'stringLookups.endsWith': false }),
+    ).toEqual({});
+  });
+});
+
 describe('groups', () => {
   it('drops an or group the backend cannot evaluate', () => {
     // Keeping one branch would *narrow* the result, which is the one thing pruning may not do.
@@ -140,6 +197,15 @@ describe('the widening invariant', () => {
       'a partially pruned and',
       { and: [{ status: 'active' }, { version: 1 }] },
       { 'fields.version': false },
+    ],
+    // Kept rather than dropped, so the invariant here is that keeping it was safe: the pruned
+    // filter still matches every row the original did, which for an unchanged filter means the
+    // evaluator agrees the status constraint was answerable all along.
+    ['a kept status filter', { status: 'active' }, { 'stringLookups.caseSensitive': false }],
+    [
+      'a kept status lookup',
+      { status: { lookup: 'exact', value: 'active' } },
+      { 'stringLookups.exact': false },
     ],
   ];
 
