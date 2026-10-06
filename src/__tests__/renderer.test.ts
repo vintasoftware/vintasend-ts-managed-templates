@@ -32,9 +32,20 @@ beforeEach(() => {
   backend = new InMemoryTemplateManagerBackend();
 });
 
+/** Store a template and activate it, since a send only ever renders an active version. */
+async function publish(key: string, overrides: Partial<ManagedTemplateCreateInput> = {}) {
+  await backend.createTemplate(createInput(key, overrides));
+  await backend.createTemplateStatusUpdate({ templateKey: key, version: 1, status: 'active' });
+}
+
+async function publishNextVersion(key: string, version: number, bodyTemplate?: string) {
+  await backend.updateTemplate(key, bodyTemplate === undefined ? {} : { bodyTemplate });
+  await backend.createTemplateStatusUpdate({ templateKey: key, version, status: 'active' });
+}
+
 describe('rendering a stored template', () => {
   it('reads the template behind the key and renders it', async () => {
-    await backend.createTemplate(createInput('welcome'));
+    await publish('welcome');
     const { renderer } = makeManagedEmailRenderer(backend);
 
     const rendered = await renderer.render(makeNotification('welcome'), { name: 'Ana' });
@@ -49,8 +60,8 @@ describe('rendering a stored template', () => {
   });
 
   it('stamps the version that rendered onto the payload', async () => {
-    await backend.createTemplate(createInput('welcome'));
-    await backend.updateTemplate('welcome', { bodyTemplate: 'v2' });
+    await publish('welcome');
+    await publishNextVersion('welcome', 2, 'v2');
     const { renderer } = makeManagedEmailRenderer(backend);
 
     const latest = await renderer.render(makeNotification('welcome'), {});
@@ -61,8 +72,8 @@ describe('rendering a stored template', () => {
   });
 
   it('reports which version rendered', async () => {
-    await backend.createTemplate(createInput('welcome'));
-    await backend.updateTemplate('welcome', { bodyTemplate: 'v2' });
+    await publish('welcome');
+    await publishNextVersion('welcome', 2, 'v2');
     const { renderer } = makeManagedEmailRenderer(backend);
 
     const result = await renderer.renderManaged(makeNotification('welcome'), {});
@@ -95,9 +106,7 @@ describe('rendering a stored template', () => {
     await backend.createTemplate(
       createInput('base', { bodyTemplate: '<html>{% managed_children %}</html>' }),
     );
-    await backend.createTemplate(
-      createInput('welcome', { bodyTemplate: '{% managed_extends "base" %}<p>Hi</p>' }),
-    );
+    await publish('welcome', { bodyTemplate: '{% managed_extends "base" %}<p>Hi</p>' });
     const { renderer, inner } = makeManagedEmailRenderer(backend);
 
     await renderer.render(makeNotification('welcome'), {});
@@ -106,9 +115,7 @@ describe('rendering a stored template', () => {
   });
 
   it('hands the store contents through verbatim when composition is off', async () => {
-    await backend.createTemplate(
-      createInput('welcome', { bodyTemplate: '{% managed_children %}' }),
-    );
+    await publish('welcome', { bodyTemplate: '{% managed_children %}' });
     const renderer = new ManagedTemplateEmailRenderer<TestConfig>(
       backend,
       makeManagedEmailRenderer(backend).inner,
@@ -121,7 +128,7 @@ describe('rendering a stored template', () => {
   });
 
   it('carries the preheader alongside subject and body', async () => {
-    await backend.createTemplate(createInput('welcome', { preheaderTemplate: 'see inside' }));
+    await publish('welcome', { preheaderTemplate: 'see inside' });
     const { renderer, inner } = makeManagedEmailRenderer(backend);
 
     await renderer.render(makeNotification('welcome'), {});
@@ -132,8 +139,8 @@ describe('rendering a stored template', () => {
 
 describe('getLatestTemplateVersion', () => {
   it('answers with the version a bare render would resolve to', async () => {
-    await backend.createTemplate(createInput('welcome'));
-    await backend.updateTemplate('welcome', {});
+    await publish('welcome');
+    await publishNextVersion('welcome', 2);
     const { renderer } = makeManagedEmailRenderer(backend);
 
     expect(await renderer.getLatestTemplateVersion('welcome')).toBe(2);
@@ -148,7 +155,7 @@ describe('getLatestTemplateVersion', () => {
 
 describe('text channels', () => {
   it('feeds only the body to a text renderer', async () => {
-    await backend.createTemplate(createInput('sms', { bodyTemplate: 'Code: {code}' }));
+    await publish('sms', { bodyTemplate: 'Code: {code}' });
     const contents: { text: string }[] = [];
     const inner = {
       renderFromTemplateContent: async (

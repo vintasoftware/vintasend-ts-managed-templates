@@ -17,6 +17,27 @@ export class ManagedTemplateError extends Error {
 /** Raised when a template is not found in the backend. */
 export class ManagedTemplateNotFoundError extends ManagedTemplateError {}
 
+/**
+ * Raised when a send resolves a key that has versions, but none of them is `active`.
+ *
+ * A subclass of {@link ManagedTemplateNotFoundError} on purpose: from a send's point of view a
+ * key holding only drafts (or only retired versions) has nothing published to render, which is
+ * the same answer as a key with nothing stored. That is what lets a renderer's fallback treat a
+ * key nobody has published yet as "not customized", and what lets an API keep mapping it to 404.
+ * Catch this subclass to tell "exists but unpublished" apart from "never created".
+ */
+export class ManagedTemplateNoActiveVersionError extends ManagedTemplateNotFoundError {}
+
+/**
+ * Raised when deleting a template version the deletion rule protects.
+ *
+ * Only a version that was never published can be deleted: one still in `draft` whose status
+ * history records nothing but its creation. Anything else may have rendered a notification that
+ * is pinned to it, and its status history is the record of who published it — retire it with
+ * `archive` instead. See `isTemplateVersionDeletable`.
+ */
+export class ManagedTemplateDeletionNotAllowedError extends ManagedTemplateError {}
+
 /** Raised when a filter is malformed or names a field the vocabulary does not have. */
 export class ManagedTemplateInvalidFilterError extends ManagedTemplateError {}
 
