@@ -51,11 +51,31 @@ export interface BaseTemplateManagerBackend {
   createTemplate(data: ManagedTemplateCreateInput): Promise<ManagedTemplate>;
 
   /**
-   * One version of a template. `version` absent or `null` returns the latest version.
+   * One version of a template. `version` absent or `null` returns the latest version, whatever
+   * its status.
+   *
+   * That is the *editing view*: an editor or an API wants the draft someone is working on. A send
+   * never renders it — sends go through {@link getActiveTemplate} instead.
    *
    * @throws ManagedTemplateNotFoundError if the key (or that version of it) does not exist.
    */
   getTemplate(templateKey: string, version?: number | null): Promise<ManagedTemplate>;
+
+  /**
+   * The version an unpinned send renders: the highest-numbered version whose status is `active`.
+   *
+   * Drafts are skipped whatever their number, and so are `inactive` and `archived` versions. A key
+   * may hold several active versions at once; the newest of them wins.
+   *
+   * Optional, so a backend written before it existed keeps compiling. The library answers for a
+   * backend that leaves it out by filtering on `{ key, status: 'active' }` — implement it when the
+   * store can answer more cheaply. `newestActiveVersion` and `noActiveVersion` are exported so an
+   * implementation shares the rule and the error rather than re-deriving them.
+   *
+   * @throws ManagedTemplateNotFoundError if the key does not exist.
+   * @throws ManagedTemplateNoActiveVersionError if the key exists but no version of it is active.
+   */
+  getActiveTemplate?(templateKey: string): Promise<ManagedTemplate>;
 
   /**
    * Create a new version of an existing template, copied forward from its latest one.
@@ -79,7 +99,17 @@ export interface BaseTemplateManagerBackend {
   /**
    * Delete one version of a template, or its latest version when `version` is absent.
    *
+   * Only a version that was never published may be deleted — still in `draft`, with nothing but
+   * `draft` in its status history (`isTemplateVersionDeletable`). A backend should refuse anything
+   * else with `ManagedTemplateDeletionNotAllowedError` unless its operator explicitly configured
+   * it to allow hard deletes; `ManagedTemplateService` checks the rule before calling this either
+   * way, so a backend that does not enforce it is still protected behind the service.
+   *
+   * Never delete the version's status history. It is the audit trail of who published what, and
+   * it has to outlive the version it describes.
+   *
    * @throws ManagedTemplateNotFoundError if the key (or that version of it) does not exist.
+   * @throws ManagedTemplateDeletionNotAllowedError if the version has been published.
    */
   deleteTemplate(templateKey: string, version?: number | null): Promise<void>;
 

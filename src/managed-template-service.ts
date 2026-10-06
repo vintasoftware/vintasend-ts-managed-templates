@@ -8,12 +8,15 @@
  *
  * What the service adds on top of the raw backend:
  *
- * * **Version resolution.** An absent `version` consistently means "the latest version of this
- *   key" across reads, status changes, and rendering, so callers never juggle version numbers
- *   unless they want a specific one.
+ * * **Version resolution.** An absent `version` means "the latest version of this key" across
+ *   reads and status changes — the editing view, whatever the version's status. Sends are the
+ *   exception: an unpinned render resolves to the key's newest *active* version, so a draft is
+ *   never sent (see `lifecycle`).
  * * **Status transitions.** Status changes are validated against `allowedStatusTransitions` and
  *   then written through the backend's audit trail, with named helpers (`activate` /
  *   `deactivate` / `archive`) for the common moves.
+ * * **Deletion rule.** Only a version that was never published can be deleted, whatever the
+ *   backend does on its own; a published version is retired with `archive`.
  * * **Filter validation.** Filters are checked for shape and field names before they reach the
  *   backend, so a typo throws `ManagedTemplateInvalidFilterError` here instead of silently
  *   matching nothing (or blowing up) deep inside a backend's query translation.
@@ -34,7 +37,7 @@
  * Two deliberate non-policies, both chosen so the service stays a thin orchestration layer:
  *
  * * A key may have **any number of active versions at once**. Activating a version does not touch
- *   the ones already active; deciding which active version wins at render time is the host's call.
+ *   the ones already active. An unpinned send renders the highest-numbered of them.
  * * `changedBy` is **passed through untouched**, `null` included. The service never requires
  *   attribution on a status change.
  */
@@ -66,6 +69,7 @@ import {
   pruneUnsupportedFilters,
   TAG_FILTER_FIELDS,
 } from './filters.js';
+import { assertTemplateVersionDeletable, resolveActiveTemplate } from './lifecycle.js';
 import type {
   ManagedTemplateRenderer,
   ManagedTemplateRenderResult,
@@ -117,6 +121,13 @@ export type ManagedTemplateServiceOptions = {
   allowedStatusTransitions?: Readonly<
     Record<ManagedTemplateStatus, readonly ManagedTemplateStatus[]>
   >;
+  /**
+   * When true, `deleteTemplate` skips the deletion rule and hands any version to the backend.
+   * Off by default: only a version that was never published can be deleted. The backends shipped
+   * with VintaSend enforce the rule themselves as well, under an option of the same name, so a
+   * hard delete of a published version needs both switched on.
+   */
+  allowDeletingPublishedVersions?: boolean;
 };
 
 /**
@@ -158,6 +169,8 @@ export class ManagedTemplateService<
     Record<ManagedTemplateStatus, readonly ManagedTemplateStatus[]>
   >;
 
+  readonly allowDeletingPublishedVersions: boolean;
+
   private capabilitiesCache: ManagedTemplateFilterCapabilities | null = null;
 
   /**
@@ -176,6 +189,7 @@ export class ManagedTemplateService<
     this.composeTemplates = options.composeTemplates ?? true;
     this.composer = options.composer ?? TemplateComposer.fromBackend(templateManagerBackend);
     this.allowedStatusTransitions = options.allowedStatusTransitions ?? DEFAULT_STATUS_TRANSITIONS;
+    this.allowDeletingPublishedVersions = options.allowDeletingPublishedVersions ?? false;
   }
 
   // -------------------------------------------------------------------------------------------
@@ -218,12 +232,23 @@ export class ManagedTemplateService<
   }
 
   /**
-   * One version of a template. An absent `version` returns the latest version.
+   * One version of a template. An absent `version` returns the latest version, whatever its
+   * status — the editing view. Use {@link getActiveTemplate} for what a send renders.
    *
    * @throws ManagedTemplateNotFoundError if the key (or that version of it) does not exist.
    */
   async getTemplate(templateKey: string, version: number | null = null): Promise<ManagedTemplate> {
     return this.templateManagerBackend.getTemplate(templateKey, version);
+  }
+
+  /**
+   * The version an unpinned send of `templateKey` renders: its highest-numbered active version.
+   *
+   * @throws ManagedTemplateNotFoundError if the key does not exist.
+   * @throws ManagedTemplateNoActiveVersionError if it exists but no version of it is active.
+   */
+  async getActiveTemplate(templateKey: string): Promise<ManagedTemplate> {
+    return resolveActiveTemplate(this.templateManagerBackend, templateKey);
   }
 
   /**
@@ -245,9 +270,27 @@ export class ManagedTemplateService<
 
   /**
    * Delete one version of a template, or its latest version when `version` is absent.
+   *
+   * Only a version that was never published can be deleted: still in `draft`, with nothing but
+   * `draft` in its status history. A published version may have rendered a notification that is
+   * pinned to it, and its history records who published it — retire it with {@link archive}
+   * instead. The status history is never deleted.
+   *
+   * @throws ManagedTemplateNotFoundError if the key (or that version of it) does not exist.
+   * @throws ManagedTemplateDeletionNotAllowedError if the version has been published and
+   *   `allowDeletingPublishedVersions` is off.
    */
   async deleteTemplate(templateKey: string, version: number | null = null): Promise<void> {
-    await this.templateManagerBackend.deleteTemplate(templateKey, version);
+    const template = await this.getTemplate(templateKey, version);
+    if (!this.allowDeletingPublishedVersions) {
+      assertTemplateVersionDeletable(
+        template,
+        await this.templateManagerBackend.getTemplateStatusHistory(templateKey, template.version),
+      );
+    }
+    // The version that was checked, not "the latest" again: a version drafted in between must
+    // not be the one that goes.
+    await this.templateManagerBackend.deleteTemplate(templateKey, template.version);
   }
 
   /** Every version of a template, newest version first. */
@@ -308,7 +351,8 @@ export class ManagedTemplateService<
    * Publish one version of a template.
    *
    * Other versions of the same key that are already active are left alone — a key may hold
-   * several active versions at once, and choosing between them is the host's call.
+   * several active versions at once. An unpinned send renders the highest-numbered active one, so
+   * activating an older version while a newer one is active does not change what is sent.
    */
   async activate(
     templateKey: string,
@@ -943,11 +987,12 @@ export class ManagedTemplateService<
    *
    * The notification's `bodyTemplate` is the template key. Which version renders is decided in
    * this order: the `version` argument, then the notification's own `requestedTemplateVersion`,
-   * then whatever the backend considers current.
+   * then the key's newest active version.
    *
    * The argument is there to render a version the notification is *not* pinned to — previewing an
    * unpublished draft, or reproducing what an old notification looked like. Leave it off and this
-   * renders what a real send would.
+   * renders what a real send would, except that a renderer's registered fallback is never used:
+   * a key with nothing published throws.
    */
   async render(
     notification: AnyNotification<Config>,

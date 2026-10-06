@@ -33,9 +33,11 @@ export {
   ManagedTemplateCompositionError,
   ManagedTemplateCompositionReferenceError,
   ManagedTemplateCompositionSyntaxError,
+  ManagedTemplateDeletionNotAllowedError,
   ManagedTemplateError,
   ManagedTemplateInvalidFilterError,
   ManagedTemplateInvalidTagError,
+  ManagedTemplateNoActiveVersionError,
   ManagedTemplateNotFoundError,
   ManagedTemplateStatusTransitionError,
   ManagedTemplateTagAlreadyExistsError,
@@ -92,8 +94,18 @@ export {
 export type { InMemoryTemplateManagerBackendOptions } from './in-memory-template-manager-backend.js';
 // A backend to develop and test against
 export { InMemoryTemplateManagerBackend } from './in-memory-template-manager-backend.js';
+// Lifecycle rules: which version a send renders, which versions may be deleted
+export {
+  assertTemplateVersionDeletable,
+  isTemplateVersionDeletable,
+  newestActiveVersion,
+  noActiveVersion,
+  resolveActiveTemplate,
+} from './lifecycle.js';
 export type {
   ManagedEmailTemplateContent,
+  ManagedTemplateFallbackOptions,
+  ManagedTemplateFallbackTemplate,
   ManagedTemplateRendererOptions,
   ManagedTemplateRenderResult,
   TextTemplate,

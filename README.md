@@ -95,7 +95,53 @@ await notificationService.createNotification({
 });
 ```
 
-Nothing else about creating or sending notifications changes.
+Nothing else about creating or sending notifications changes. A send renders the key's newest
+**active** version — see [Which version a send renders](#which-version-a-send-renders) — so a
+template has to be activated before it goes out.
+
+### Sending before a template is written: fallbacks
+
+An application can register a default for each key, so it can send a notification before anyone
+has written its template in the store. While a key has nothing published, `render` hands the
+default to a renderer of your choosing; once a version of the key is activated, sends use it.
+
+```ts
+import { PugEmailTemplateRendererFactory } from 'vintasend-pug';
+
+const renderer = new ManagedTemplateEmailRenderer<Config>(managerBackend, innerRenderer, {
+  fallback: {
+    // Optional; defaults to the inner renderer. Its `render` gets a copy of the notification
+    // with `bodyTemplate` / `subjectTemplate` replaced by the values registered below.
+    renderer: new PugEmailTemplateRendererFactory<Config>().create(),
+    templates: {
+      welcome: {
+        subjectTemplate: 'emails/welcome/subject.pug', // file paths, for a file renderer
+        bodyTemplate: 'emails/welcome/body.pug',
+      },
+    },
+  },
+});
+
+renderer.getFallbackTemplate('welcome'); // the registered default, or null — for a dashboard
+```
+
+The text renderer takes the same option. The rules:
+
+* **Only when the key itself has nothing published** — no versions at all, or only drafts and
+  retired ones. A stored template that fails to compose (it extends a base that is missing) throws
+  `ManagedTemplateCompositionReferenceError` instead: that template exists and is broken, and a
+  default must not hide it.
+* **Only for an unpinned notification.** If a pinned version is missing, the template existed when
+  the notification was created, so the render throws.
+* **Only for a registered key**, matched as an own property — a key such as `constructor` never
+  matches the prototype.
+* **Only on `render`**, the send path. `renderManaged`, `renderTemplate` and the service's
+  `render` (what previews use) never fall back, and `getLatestTemplateVersion` still answers `null`
+  for a key with nothing published.
+
+A fallback payload carries `templateSource: 'fallback'` and no `templateVersion`, so the
+notification's `usedTemplateVersion` stays `null` and a host can tell the default went out. The
+renderer logs the key and the notification id when it falls back — never the context.
 
 ### What the inner renderer has to do
 
@@ -307,14 +353,33 @@ await service.updateTemplate('welcome', {
   // tags: undefined carries them forward; [] clears them
 });
 
-await service.getTemplate('welcome'); // latest version
+await service.getTemplate('welcome'); // latest version, whatever its status
 await service.getTemplate('welcome', 1); // a specific one
+await service.getActiveTemplate('welcome'); // what an unpinned send renders
 await service.getTemplateVersions('welcome'); // every version, newest first
 ```
 
-An absent `version` means "the latest version of this key" everywhere in the service — reads,
-status changes, tagging, and rendering — so callers only deal with version numbers when they
-actually want a specific one.
+An absent `version` means "the latest version of this key" for reads, status changes and tagging —
+the editing view, which includes a draft someone is working on. Sends are the exception, below.
+
+### Which version a send renders
+
+"Latest" means two things, and they are kept apart:
+
+| | Resolves to | Used by |
+|---|---|---|
+| The editing view | the newest version, whatever its status | `getTemplate(key)`, status changes, tagging, the API's reads |
+| The send path | the newest **`active`** version | `render`, `renderManaged` with no version and no pin, `getLatestTemplateVersion` |
+
+A draft is never sent: publishing is the deliberate act that puts a version in front of
+recipients. When several versions of a key are active at once, the **highest-numbered** active one
+renders. A key with no active version throws `ManagedTemplateNoActiveVersionError`, a subclass of
+`ManagedTemplateNotFoundError` — so a key holding only drafts counts as "not customized yet", and a
+registered fallback applies.
+
+A notification **pinned** to a version renders that version whatever its status today. The pin is
+there so a notification renders what was reviewed when it was created, so deactivating the version
+later does not change what a pinned notification renders.
 
 ### Version-pinned rendering
 
@@ -326,12 +391,13 @@ const { version, rendered } = await renderer.renderManaged(notification, context
 ```
 
 Which version renders is decided in this order: an explicit `version` argument, then the
-notification's own `requestedTemplateVersion`, then whatever the backend considers current.
+notification's own `requestedTemplateVersion`, then the key's newest active version.
 
 `requestedTemplateVersion` is a first-class VintaSend field: pass it to `createNotification`, or
 let the service resolve it for you with `pinTemplateVersions`. This package is what makes it mean
-anything — `getLatestTemplateVersion` is how the service resolves "whatever is current right now",
-and it is overridden here to read the store.
+anything — `getLatestTemplateVersion` is how the service resolves "what would be sent right now",
+and it is overridden here to answer the key's newest active version (or `null` when nothing is
+published).
 
 `render` also stamps the version it used onto the payload it returns, as `templateVersion`. An
 adapter returns that payload from `send()`, and the service records it on the notification as
@@ -370,8 +436,26 @@ application.
 Two things the service deliberately does *not* decide for you:
 
 * **A key may have several `active` versions at once.** Activating one does not deactivate the
-  others; choosing which active version wins at render time is the host's call.
+  others. An unpinned send renders the highest-numbered active one.
 * **`changedBy` is passed through untouched, `null` included.** Attribution is never required.
+
+### Deleting a version
+
+Only a version that was **never published** can be deleted: one still in `draft` whose status
+history records nothing but `draft`. Anything else throws `ManagedTemplateDeletionNotAllowedError`
+— a published version may have rendered a notification that is pinned to it, and its status history
+is the record of who published it. Retire it with `archive` instead.
+
+```ts
+await service.deleteTemplate('welcome', 3); // fine while v3 is an unpublished draft
+await service.deleteTemplate('welcome', 1); // throws once v1 has been activated
+```
+
+The status history is never deleted, even when the version is. The service checks the rule
+before it calls the backend, so every backend is held to it; the backends shipped with VintaSend
+check it themselves too. If an operator genuinely needs to hard-delete a published version, pass
+`allowDeletingPublishedVersions: true` to both the service and the backend.
+`isTemplateVersionDeletable(template, history)` answers the question without attempting the delete.
 
 ## Tags
 
@@ -502,7 +586,7 @@ Implement `BaseTemplateManagerBackend`. `InMemoryTemplateManagerBackend` is a co
 implementation to read against, and the seam's own test suite
 (`src/__tests__/in-memory-backend.test.ts`) doubles as a conformance checklist.
 
-The three rules that are easy to miss:
+The four rules that are easy to miss:
 
 1. **Derive `isAbstract` on every write** that touches a source field, with `isAbstract()` from
    this package, and store the answer. A source whose composition tags are malformed has no answer:
@@ -511,6 +595,14 @@ The three rules that are easy to miss:
    start the copy in `draft`, and leave the version it was copied from untouched.
 3. **`mostRecentActiveVersion` is answered against the key, not the row.** "This row is `active` or
    `draft`, and no `active`-or-`draft` row of the same key is numbered higher."
+4. **`deleteTemplate` refuses a published version and keeps the status history.** Use
+   `assertTemplateVersionDeletable`, and put any hard delete of a published version behind an
+   option that is off by default.
+
+`getActiveTemplate` — the newest `active` version, for the send path — is optional. Leave it out
+and the library answers it with `getFilteredTemplates({ key, status: 'active' })`; implement it when
+your store can answer more cheaply, throwing `noActiveVersion(key)` for a key with no active
+version.
 
 Slug every tag with `slugifyTag` and keep slugs unique with `nextAvailableSlug`, so your store and
 every other one derive the same identity from the same text.

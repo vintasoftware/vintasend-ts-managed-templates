@@ -28,6 +28,11 @@ import {
   type ManagedTemplateOrderBy,
   orderByCapabilityKey,
 } from './filters.js';
+import {
+  assertTemplateVersionDeletable,
+  newestActiveVersion,
+  noActiveVersion,
+} from './lifecycle.js';
 import { nextAvailableSlug, normalizeTagText, slugifyTag } from './tags.js';
 import type {
   ManagedTemplate,
@@ -40,6 +45,12 @@ import type {
 export type InMemoryTemplateManagerBackendOptions = {
   /** Overridden in tests so timestamps are deterministic. */
   now?: () => Date;
+  /**
+   * When true, `deleteTemplate` removes a version whatever its status. Off by default: only a
+   * version that was never published can be deleted (see `isTemplateVersionDeletable`).
+   * `ManagedTemplateService` checks the rule too, under its own option of the same name.
+   */
+  allowDeletingPublishedVersions?: boolean;
 };
 
 export class InMemoryTemplateManagerBackend implements BaseTemplateManagerBackend {
@@ -53,8 +64,11 @@ export class InMemoryTemplateManagerBackend implements BaseTemplateManagerBacken
 
   private readonly now: () => Date;
 
+  private readonly allowDeletingPublishedVersions: boolean;
+
   constructor(options: InMemoryTemplateManagerBackendOptions = {}) {
     this.now = options.now ?? (() => new Date());
+    this.allowDeletingPublishedVersions = options.allowDeletingPublishedVersions ?? false;
   }
 
   // -------------------------------------------------------------------------------------------
@@ -90,6 +104,18 @@ export class InMemoryTemplateManagerBackend implements BaseTemplateManagerBacken
       throw new ManagedTemplateNotFoundError(describeMissing(templateKey, version));
     }
     return structuredCloneTemplate(template);
+  }
+
+  async getActiveTemplate(templateKey: string): Promise<ManagedTemplate> {
+    const versions = this.versionsOf(templateKey);
+    if (versions.length === 0) {
+      throw new ManagedTemplateNotFoundError(describeMissing(templateKey, null));
+    }
+    const active = newestActiveVersion(versions);
+    if (active === undefined) {
+      throw noActiveVersion(templateKey);
+    }
+    return structuredCloneTemplate(active);
   }
 
   async updateTemplate(
@@ -134,10 +160,14 @@ export class InMemoryTemplateManagerBackend implements BaseTemplateManagerBacken
     return structuredCloneTemplate(template);
   }
 
+  /** Delete one never-published version. Its status history is kept either way. */
   async deleteTemplate(templateKey: string, version: number | null = null): Promise<void> {
     const template = this.find(templateKey, version);
     if (template === undefined) {
       throw new ManagedTemplateNotFoundError(describeMissing(templateKey, version));
+    }
+    if (!this.allowDeletingPublishedVersions) {
+      assertTemplateVersionDeletable(template, this.history);
     }
     this.templates = this.templates.filter((candidate) => candidate !== template);
   }
