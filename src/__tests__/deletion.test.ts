@@ -185,3 +185,40 @@ describe('isTemplateVersionDeletable', () => {
     ).toBe(false);
   });
 });
+
+describe('version numbers after a delete', () => {
+  it('are never reused, so a new version cannot inherit a deleted one history', async () => {
+    const permissive = new InMemoryTemplateManagerBackend({ allowDeletingPublishedVersions: true });
+    const permissiveService = makeService(permissive, { allowDeletingPublishedVersions: true });
+    await permissiveService.createTemplate(createInput('k'));
+    await permissiveService.activate('k', 1);
+    await permissiveService.updateTemplate('k', {});
+    await permissiveService.activate('k', 2, 'reviewer');
+    await permissiveService.deleteTemplate('k', 2);
+
+    const next = await permissiveService.updateTemplate('k', {});
+
+    expect(next.version).toBe(3);
+    expect(await permissive.getTemplateStatusHistory('k', 3)).toEqual([]);
+    // The fresh draft is deletable: it inherited no "active" entry from the deleted v2.
+    await permissiveService.deleteTemplate('k', 3);
+  });
+
+  it('skip a deleted draft number too', async () => {
+    await service.createTemplate(createInput('k'));
+    await service.updateTemplate('k', {});
+    await service.deleteTemplate('k', 2);
+
+    expect((await service.updateTemplate('k', {})).version).toBe(3);
+  });
+
+  it('start a recreated key above every number its history used', async () => {
+    const permissive = new InMemoryTemplateManagerBackend({ allowDeletingPublishedVersions: true });
+    const permissiveService = makeService(permissive, { allowDeletingPublishedVersions: true });
+    await permissiveService.createTemplate(createInput('k'));
+    await permissiveService.activate('k', 1);
+    await permissiveService.deleteTemplate('k', 1);
+
+    expect((await permissiveService.createTemplate(createInput('k'))).version).toBe(2);
+  });
+});

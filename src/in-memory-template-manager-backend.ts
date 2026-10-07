@@ -62,6 +62,9 @@ export class InMemoryTemplateManagerBackend implements BaseTemplateManagerBacken
 
   private nextId = 1;
 
+  /** The highest version number each key has had deleted, so it is never handed out again. */
+  private highestDeletedVersion = new Map<string, number>();
+
   private readonly now: () => Date;
 
   private readonly allowDeletingPublishedVersions: boolean;
@@ -80,7 +83,8 @@ export class InMemoryTemplateManagerBackend implements BaseTemplateManagerBacken
     const template: ManagedTemplate = {
       id: this.nextId++,
       key: data.key,
-      version: 1,
+      // A key whose versions were all deleted starts above every number it used before.
+      version: this.versionsOf(data.key).length > 0 ? 1 : this.nextVersion(data.key),
       name: data.name,
       description: data.description,
       templateManagedBackend: data.templateManagedBackend,
@@ -143,7 +147,8 @@ export class InMemoryTemplateManagerBackend implements BaseTemplateManagerBacken
     const template: ManagedTemplate = {
       id: this.nextId++,
       key: previous.key,
-      version: previous.version + 1,
+      // Not `previous.version + 1`: a deleted version above it keeps its number.
+      version: this.nextVersion(previous.key),
       name: data.name || previous.name,
       description: data.description ?? previous.description,
       templateManagedBackend: previous.templateManagedBackend,
@@ -170,6 +175,10 @@ export class InMemoryTemplateManagerBackend implements BaseTemplateManagerBacken
       assertTemplateVersionDeletable(template, this.history);
     }
     this.templates = this.templates.filter((candidate) => candidate !== template);
+    this.highestDeletedVersion.set(
+      templateKey,
+      Math.max(this.highestDeletedVersion.get(templateKey) ?? 0, template.version),
+    );
   }
 
   async createTemplateStatusUpdate(params: {
@@ -376,6 +385,28 @@ export class InMemoryTemplateManagerBackend implements BaseTemplateManagerBacken
       // the write, where the edit boundary has already had its chance to refuse it.
       return false;
     }
+  }
+
+  /**
+   * One above the highest version number the key has ever had — live, deleted or only in its
+   * status history.
+   *
+   * A number is never reused. Status history outlives a deleted version and is read by key and
+   * version, so a new version that took a deleted one's number would inherit its history: a
+   * publish that never happened, and a draft the deletion rule then refuses. A notification pinned
+   * to the deleted number would also start rendering the newcomer.
+   */
+  private nextVersion(templateKey: string): number {
+    return (
+      Math.max(
+        0,
+        this.highestDeletedVersion.get(templateKey) ?? 0,
+        ...this.versionsOf(templateKey).map((template) => template.version),
+        ...this.history
+          .filter((record) => record.templateKey === templateKey)
+          .map((record) => record.version),
+      ) + 1
+    );
   }
 
   private versionsOf(templateKey: string): ManagedTemplate[] {

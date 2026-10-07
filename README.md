@@ -591,8 +591,10 @@ The four rules that are easy to miss:
 1. **Derive `isAbstract` on every write** that touches a source field, with `isAbstract()` from
    this package, and store the answer. A source whose composition tags are malformed has no answer:
    store `false` rather than letting the syntax error out of the write.
-2. **`updateTemplate` inserts, never updates.** Copy the latest version forward, bump the version,
-   start the copy in `draft`, and leave the version it was copied from untouched.
+2. **`updateTemplate` inserts, never updates.** Copy the latest version forward, start the copy in
+   `draft`, and leave the version it was copied from untouched. Number it one above the highest
+   version the key has *ever* had — a deleted version's number is never reused, or the new version
+   would inherit its status history and the notifications pinned to it.
 3. **`mostRecentActiveVersion` is answered against the key, not the row.** "This row is `active` or
    `draft`, and no `active`-or-`draft` row of the same key is numbered higher."
 4. **`deleteTemplate` refuses a published version and keeps the status history.** Use
