@@ -43,14 +43,17 @@
  * only to a registered key. Once a version of the key is activated, sends use it.
  */
 
-import type {
-  AnyNotification,
-  BaseLogger,
-  BaseNotificationTemplateRenderer,
-  BaseNotificationTypeConfig,
-  EmailTemplate,
-  EmailTemplateContent,
-  JsonObject,
+import {
+  type AnyNotification,
+  type BaseLogger,
+  type BaseNotificationTemplateRenderer,
+  type BaseNotificationTypeConfig,
+  type EmailTemplate,
+  type EmailTemplateContent,
+  type JsonObject,
+  log,
+  logId,
+  logLabel,
 } from 'vintasend';
 
 import type { BaseTemplateManagerBackend } from './base-template-manager-backend.js';
@@ -363,8 +366,7 @@ export abstract class ManagedTemplateRenderer<
   ): Promise<RenderedType> {
     // The key and the notification id only: the context is the recipient's data.
     this.logger?.info(
-      `[ManagedTemplateRenderer] template '${notification.bodyTemplate}' has nothing published; ` +
-        `rendering the registered fallback for notification ${String(notification.id)}.`,
+      log`[ManagedTemplateRenderer] template '${logLabel(notification.bodyTemplate)}' has nothing published; rendering the registered fallback for notification ${logId(notification.id)}.`,
     );
     const renderer = this.fallback?.renderer ?? this.renderer;
     const rendered = await renderer.render(

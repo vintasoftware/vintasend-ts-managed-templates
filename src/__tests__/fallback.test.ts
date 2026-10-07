@@ -1,9 +1,11 @@
-import type {
-  AnyNotification,
-  BaseLogger,
-  BaseNotificationTemplateRenderer,
-  EmailTemplate,
-  JsonObject,
+import {
+  type AnyNotification,
+  type BaseLogger,
+  type BaseNotificationTemplateRenderer,
+  type EmailTemplate,
+  type JsonObject,
+  type LogMessage,
+  renderLogMessage,
 } from 'vintasend';
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -61,16 +63,16 @@ class RecordingFileRenderer implements BaseNotificationTemplateRenderer<TestConf
 class RecordingLogger implements BaseLogger {
   readonly lines: string[] = [];
 
-  info(message: string): void {
-    this.lines.push(message);
+  info(message: LogMessage): void {
+    this.lines.push(renderLogMessage(message));
   }
 
-  warn(message: string): void {
-    this.lines.push(message);
+  warn(message: LogMessage): void {
+    this.lines.push(renderLogMessage(message));
   }
 
-  error(message: string): void {
-    this.lines.push(message);
+  error(message: LogMessage): void {
+    this.lines.push(renderLogMessage(message));
   }
 }
 
@@ -172,10 +174,35 @@ describe('a key with nothing stored', () => {
 
     await renderer.render(makeNotification('welcome'), { name: 'Sensitive Name' });
 
-    expect(logger.lines).toHaveLength(1);
-    expect(logger.lines[0]).toContain('welcome');
-    expect(logger.lines[0]).toContain('notification-1');
+    expect(logger.lines).toEqual([
+      "[ManagedTemplateRenderer] template 'welcome' has nothing published; rendering the registered fallback for notification notification-1.",
+    ]);
     expect(logger.lines.join('\n')).not.toContain('Sensitive Name');
+  });
+
+  it('keeps the lookup error and the notification content out of the log on the fallback path', async () => {
+    backend.getActiveTemplate = async () => {
+      throw new ManagedTemplateNotFoundError(
+        'No template for Jane Synthetic <jane.synthetic@example.com>',
+      );
+    };
+    const renderer = makeRenderer();
+    const logger = new RecordingLogger();
+    renderer.injectLogger(logger);
+    const notification = {
+      ...makeNotification('welcome'),
+      title: 'Lab results for Jane Synthetic',
+    } as AnyNotification<TestConfig>;
+
+    await renderer.render(notification, {
+      name: 'Jane Synthetic',
+      email: 'jane.synthetic@example.com',
+    });
+
+    expect(logger.lines).toHaveLength(1);
+    const output = logger.lines.join('\n');
+    expect(output).not.toContain('Jane Synthetic');
+    expect(output).not.toContain('jane.synthetic@example.com');
   });
 });
 
