@@ -85,6 +85,12 @@ export interface BaseTemplateManagerBackend {
    * went out against v1 renders v1 forever, however many versions follow it, and several
    * versions of one key are live at the same time as a matter of course.
    *
+   * The new version number is one above the highest the key has **ever** had, not one above the
+   * latest live version. A deleted version's status history survives it and is read by key and
+   * version, so a reused number would inherit that history — and a notification pinned to the
+   * deleted number would start rendering the newcomer. The same goes for `createTemplate` on a key
+   * whose versions were all deleted.
+   *
    * The new version starts in `draft` whatever its predecessor's status was, so a copy nobody
    * has reviewed is never published by the act of creating it. Fields left absent on the input —
    * tags included — carry forward from the version copied.
