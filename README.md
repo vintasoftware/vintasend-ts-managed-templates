@@ -150,9 +150,17 @@ calls the inner renderer's `renderFromTemplateContent`. So the inner renderer re
 source in the `body` field**, where a file-based renderer would expect a name a loader resolves.
 
 Every renderer in the VintaSend ecosystem implements `renderFromTemplateContent` — it is the seam
-VintaSend already uses to render content it holds rather than loads — so `vintasend-pug`,
-`vintasend-react-email` and the rest work unchanged. A renderer of your own only needs to compile
-the string it is handed rather than open a file.
+VintaSend already uses to render content it holds rather than loads — so `vintasend-liquidjs`,
+`vintasend-pug` and the rest work unchanged. A renderer of your own only needs to compile the
+string it is handed rather than open a file.
+
+**Pick an engine that cannot run code.** A managed template is source that anyone who can edit
+templates — through a dashboard, through the templates management API — hands straight to the
+engine. Liquid (`vintasend-liquidjs`) evaluates expressions and filters only; set its DoS limits
+(`parseLimit`, `renderLimit`, `memoryLimit`) as well. Pug compiles a template to JavaScript and
+runs it, `- code` lines included, so with `vintasend-pug` as the inner renderer, editing a
+template is running code on the server. Keep Pug for templates that live in your repository, such
+as the fallbacks above.
 
 The email content is VintaSend's `EmailTemplateContent` plus one field:
 
