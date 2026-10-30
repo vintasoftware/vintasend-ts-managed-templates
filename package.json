@@ -29,11 +29,11 @@
     "vintasend": "^1.0.0-alpha7"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.10",
-    "@types/node": "^25.0.8",
-    "@vitest/coverage-v8": "4.0.18",
-    "typescript": "^5.9.3",
-    "vitest": "4.0.18"
+    "@biomejs/biome": "^2.6.4",
+    "@types/node": "^26.6.6",
+    "@vitest/coverage-v8": "5.0.5",
+    "typescript": "^7.0.2",
+    "vitest": "5.0.5"
   },
   "engines": {
     "node": ">=20"
