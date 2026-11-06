@@ -34,6 +34,7 @@ import {
   noActiveVersion,
 } from './lifecycle.js';
 import { nextAvailableSlug, normalizeTagText, slugifyTag } from './tags.js';
+import { blankToNull, resolveUpdatedField } from './template-fields.js';
 import type {
   ManagedTemplate,
   ManagedTemplateCreateInput,
@@ -83,14 +84,15 @@ export class InMemoryTemplateManagerBackend implements BaseTemplateManagerBacken
     const template: ManagedTemplate = {
       id: this.nextId++,
       key: data.key,
-      // A key whose versions were all deleted starts above every number it used before.
-      version: this.versionsOf(data.key).length > 0 ? 1 : this.nextVersion(data.key),
+      // 1 for a key never seen; a key whose versions were all deleted starts above every number
+      // it used before. Refusing a key that still has versions is the service's job.
+      version: this.nextVersion(data.key),
       name: data.name,
       description: data.description,
       templateManagedBackend: data.templateManagedBackend,
       bodyTemplate: data.bodyTemplate,
-      subjectTemplate: data.subjectTemplate,
-      preheaderTemplate: data.preheaderTemplate,
+      subjectTemplate: blankToNull(data.subjectTemplate),
+      preheaderTemplate: blankToNull(data.preheaderTemplate),
       status: 'draft',
       tenant: data.tenant,
       createdAt: timestamp,
@@ -141,8 +143,8 @@ export class InMemoryTemplateManagerBackend implements BaseTemplateManagerBacken
     const timestamp = this.now();
     const sources = {
       bodyTemplate: data.bodyTemplate || previous.bodyTemplate,
-      subjectTemplate: data.subjectTemplate ?? previous.subjectTemplate,
-      preheaderTemplate: data.preheaderTemplate ?? previous.preheaderTemplate,
+      subjectTemplate: resolveUpdatedField(data.subjectTemplate, previous.subjectTemplate),
+      preheaderTemplate: resolveUpdatedField(data.preheaderTemplate, previous.preheaderTemplate),
     };
     const template: ManagedTemplate = {
       id: this.nextId++,
