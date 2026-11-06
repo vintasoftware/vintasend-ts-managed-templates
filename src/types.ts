@@ -74,7 +74,9 @@ export type ManagedTemplateCreateInput = {
   description: string;
   templateManagedBackend: string;
   bodyTemplate: string;
+  /** A blank (empty or whitespace-only) value is stored as `null`. */
   subjectTemplate: string | null;
+  /** A blank (empty or whitespace-only) value is stored as `null`. */
   preheaderTemplate: string | null;
   tenant: string | null;
   /**
@@ -88,7 +90,13 @@ export type ManagedTemplateCreateInput = {
  * What creating the *next* version of an existing key needs.
  *
  * Every field is optional and an absent one means "carry this one forward": the backend copies
- * the latest version and applies only the fields that are set. There is deliberately no
+ * the latest version and applies only the fields that are set. "Latest" is the key's
+ * highest-numbered version, not whichever version the caller started editing from, so a "new
+ * version from v1" that leaves a field unset inherits it from the latest version, not from v1;
+ * pass the field explicitly to restore v1's value.
+ *
+ * `subjectTemplate` and `preheaderTemplate` can be cleared: an empty or whitespace-only string
+ * stores "no value", while `null` and `undefined` carry the latest version's value forward. There is deliberately no
  * `templateManagedBackend` or `tenant` here — neither can change across versions of one key.
  */
 export type ManagedTemplateUpdateInput = {

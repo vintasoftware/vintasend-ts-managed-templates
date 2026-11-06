@@ -27,6 +27,7 @@ export {
 // Errors
 export {
   isNotFoundError,
+  ManagedTemplateAlreadyExistsError,
   ManagedTemplateChangeUserNotFoundError,
   ManagedTemplateCompositionCycleError,
   ManagedTemplateCompositionDepthError,
@@ -124,6 +125,8 @@ export type { ManagedTemplateServiceOptions } from './managed-template-service.j
 export { DEFAULT_STATUS_TRANSITIONS, ManagedTemplateService } from './managed-template-service.js';
 // Tag slugging
 export { MAX_SLUG_LENGTH, nextAvailableSlug, normalizeTagText, slugifyTag } from './tags.js';
+// Blank-field rules shared by every backend
+export { blankToNull, isBlank, resolveUpdatedField } from './template-fields.js';
 // Dataclasses
 export type {
   ManagedTemplate,

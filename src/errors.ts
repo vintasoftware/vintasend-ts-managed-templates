@@ -63,6 +63,14 @@ export class ManagedTemplateTagNotFoundError extends ManagedTemplateError {}
 /** Raised when creating a tag whose text already slugs onto an existing tag. */
 export class ManagedTemplateTagAlreadyExistsError extends ManagedTemplateError {}
 
+/**
+ * Raised when creating a template whose key already has versions.
+ *
+ * A key is created once; further versions come from `updateTemplate`. Creating it again would
+ * hand two rows the same identity.
+ */
+export class ManagedTemplateAlreadyExistsError extends ManagedTemplateError {}
+
 /** Raised when a tag's text is empty or has nothing that can be slugified. */
 export class ManagedTemplateInvalidTagError extends ManagedTemplateError {}
 

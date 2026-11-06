@@ -48,6 +48,7 @@ import type { BaseTemplateManagerBackend } from './base-template-manager-backend
 import { TemplateComposer, type TemplateReference } from './composition.js';
 import type { ManagedTemplateStatus, ManagedTemplateTagStatus } from './constants.js';
 import {
+  ManagedTemplateAlreadyExistsError,
   ManagedTemplateInvalidFilterError,
   ManagedTemplateInvalidTagError,
   ManagedTemplateStatusTransitionError,
@@ -75,6 +76,7 @@ import type {
   ManagedTemplateRenderResult,
 } from './managed-template-renderer.js';
 import { normalizeTagText, slugifyTag } from './tags.js';
+import { blankToNull, isBlank } from './template-fields.js';
 import type {
   ManagedTemplate,
   ManagedTemplateCreateInput,
@@ -225,10 +227,25 @@ export class ManagedTemplateService<
    * Any tag text on the input that has no tag behind it yet becomes one, so a caller never has to
    * create tags before using them.
    *
+   * A blank subject or preheader (empty or whitespace-only) is stored as no value.
+   *
+   * @throws ManagedTemplateAlreadyExistsError if `input.key` already has versions. Use
+   *   {@link updateTemplate} to add one. A key whose versions were all deleted is free again and
+   *   numbers above its history.
    * @throws ManagedTemplateInvalidTagError if a tag text has nothing that can be slugified.
    */
   async createTemplate(input: ManagedTemplateCreateInput): Promise<ManagedTemplate> {
-    return this.templateManagerBackend.createTemplate(this.withCleanTags(input));
+    const existing = await this.getFilteredTemplates({ key: input.key });
+    if (existing.length > 0) {
+      throw new ManagedTemplateAlreadyExistsError(
+        `A template with key '${input.key}' already exists; create a new version with updateTemplate.`,
+      );
+    }
+    return this.templateManagerBackend.createTemplate({
+      ...this.withCleanTags(input),
+      subjectTemplate: blankToNull(input.subjectTemplate),
+      preheaderTemplate: blankToNull(input.preheaderTemplate),
+    });
   }
 
   /**
@@ -260,12 +277,21 @@ export class ManagedTemplateService<
    *
    * Tags follow the same rule as every other field on the input: absent carries the previous
    * version's tags forward, and an empty array means a version with none.
+   *
+   * Unset fields are carried forward from the key's **latest** version, even when the caller
+   * started from an older one. `subjectTemplate` and `preheaderTemplate` can be removed by
+   * passing a blank string (`''` or whitespace-only); `null` and `undefined` carry forward.
    */
   async updateTemplate(
     templateKey: string,
     input: ManagedTemplateUpdateInput,
   ): Promise<ManagedTemplate> {
-    return this.templateManagerBackend.updateTemplate(templateKey, this.withCleanTags(input));
+    return this.templateManagerBackend.updateTemplate(templateKey, {
+      ...this.withCleanTags(input),
+      // Blank is normalized to '' (the clear signal); null/undefined stay "carry forward".
+      subjectTemplate: isBlank(input.subjectTemplate) ? '' : input.subjectTemplate,
+      preheaderTemplate: isBlank(input.preheaderTemplate) ? '' : input.preheaderTemplate,
+    });
   }
 
   /**
