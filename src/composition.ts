@@ -72,10 +72,12 @@
  *
  * ## Versions
  *
- * A reference with no `version=` resolves through the backend the same way any other read does:
- * to whatever version that key currently is. Pin it when a template must keep composing against
- * an exact parent — re-rendering an old notification resolves the child's version explicitly,
- * but its unpinned parents still resolve to today's.
+ * A reference with no `version=` resolves as the composer's resolver says. `fromBackend` takes
+ * `parts`: `'latest'` (its default, and the service's) resolves to the key's newest version,
+ * drafts included, which is what an editor previews; `'published'` (the renderer's default for
+ * sends) resolves to its newest active version. Pin a reference when a template must keep
+ * composing against an exact parent — re-rendering an old notification resolves the child's
+ * version explicitly, but its unpinned parents still resolve to today's.
  *
  * ## Cycles and depth
  *
@@ -85,6 +87,7 @@
  * downstream, so both are found here rather than as a hang at send time.
  */
 
+import type { BaseTemplateManagerBackend } from './base-template-manager-backend.js';
 import { TEMPLATE_FIELDS, type TemplateField } from './constants.js';
 import {
   ManagedTemplateCompositionCycleError,
@@ -93,6 +96,7 @@ import {
   ManagedTemplateCompositionSyntaxError,
   ManagedTemplateNotFoundError,
 } from './errors.js';
+import { resolveActiveTemplate } from './lifecycle.js';
 import type { ManagedTemplate } from './types.js';
 
 /**
@@ -127,6 +131,62 @@ export type TemplateComposerOptions = {
   tagPrefix?: string;
   maxDepth?: number;
 };
+
+/**
+ * How a reference with no `version=` resolves.
+ *
+ * * `'latest'`: the key's newest version whatever its status, drafts included. What an editor's
+ *   preview shows: a draft base someone is working on composes into the preview.
+ * * `'published'`: the key's newest `active` version, the same rule a send applies to the
+ *   notification's own key. A part with nothing published fails to compose with
+ *   `ManagedTemplateCompositionReferenceError`.
+ *
+ * A reference that names a version resolves to exactly that version either way.
+ */
+export type TemplatePartResolution = 'latest' | 'published';
+
+export type TemplateComposerBackendOptions = TemplateComposerOptions & {
+  /** How unpinned references resolve. Defaults to `'latest'`. */
+  parts?: TemplatePartResolution;
+};
+
+/**
+ * What `TemplateComposer.fromBackend` and {@link partResolver} read through: `getTemplate`, plus
+ * `getActiveTemplate` or `getFilteredTemplates` for `'published'` resolution. Every
+ * `BaseTemplateManagerBackend` has them.
+ */
+export type TemplateComposerBackend = Pick<BaseTemplateManagerBackend, 'getTemplate'> &
+  Partial<Pick<BaseTemplateManagerBackend, 'getActiveTemplate' | 'getFilteredTemplates'>>;
+
+/**
+ * A resolver reading through `backend` that resolves unpinned references as `parts` says.
+ *
+ * `'published'` resolves them the way `resolveActiveTemplate` resolves a send's own key. On a
+ * backend with neither `getActiveTemplate` nor `getFilteredTemplates`, which has no way to tell
+ * which version is published, resolving an unpinned reference that way throws a `TypeError`.
+ */
+export function partResolver(
+  backend: TemplateComposerBackend,
+  parts: TemplatePartResolution,
+): TemplateResolver {
+  if (parts === 'latest') {
+    return (key, version) => backend.getTemplate(key, version);
+  }
+  return async (key, version) => {
+    if (version !== null) {
+      return backend.getTemplate(key, version);
+    }
+    if (
+      typeof backend.getActiveTemplate !== 'function' &&
+      typeof backend.getFilteredTemplates !== 'function'
+    ) {
+      throw new TypeError(
+        "Resolving parts as 'published' needs a backend with getActiveTemplate or getFilteredTemplates.",
+      );
+    }
+    return resolveActiveTemplate(backend as BaseTemplateManagerBackend, key);
+  };
+}
 
 // ---------------------------------------------------------------------------------------------
 // Parse tree
@@ -329,12 +389,32 @@ export class TemplateComposer {
     this.maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
   }
 
-  /** A composer that resolves references through `backend.getTemplate`. */
+  /**
+   * A composer that resolves references through `backend`.
+   *
+   * `options.parts` decides what a reference with no `version=` resolves to: `'latest'` (the
+   * default) reads `backend.getTemplate`, drafts included; `'published'` reads the key's newest
+   * active version. See {@link TemplatePartResolution}.
+   */
   static fromBackend(
-    backend: { getTemplate(key: string, version?: number | null): Promise<ManagedTemplate> },
-    options: TemplateComposerOptions = {},
+    backend: TemplateComposerBackend,
+    options: TemplateComposerBackendOptions = {},
   ): TemplateComposer {
-    return new TemplateComposer((key, version) => backend.getTemplate(key, version), options);
+    const { parts = 'latest', ...composerOptions } = options;
+    return new TemplateComposer(partResolver(backend, parts), composerOptions);
+  }
+
+  /**
+   * This composer's tag prefix and depth limit, resolving references through `resolveTemplate`.
+   *
+   * How a renderer or service composes the same template under another {@link
+   * TemplatePartResolution} without a second composer to configure.
+   */
+  withResolver(resolveTemplate: TemplateResolver): TemplateComposer {
+    return new TemplateComposer(resolveTemplate, {
+      tagPrefix: this.tagPrefix,
+      maxDepth: this.maxDepth,
+    });
   }
 
   // -------------------------------------------------------------------------------------------

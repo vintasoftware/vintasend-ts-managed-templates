@@ -103,9 +103,7 @@ describe('rendering a stored template', () => {
   });
 
   it('composes before the inner renderer sees the template', async () => {
-    await backend.createTemplate(
-      createInput('base', { bodyTemplate: '<html>{% managed_children %}</html>' }),
-    );
+    await publish('base', { bodyTemplate: '<html>{% managed_children %}</html>' });
     await publish('welcome', { bodyTemplate: '{% managed_extends "base" %}<p>Hi</p>' });
     const { renderer, inner } = makeManagedEmailRenderer(backend);
 

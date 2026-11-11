@@ -300,8 +300,7 @@ Neither the check nor the flag refuses anything — keeping bases out of a picke
 
 ### Versions
 
-A reference with no version resolves the same way any other read does: to whatever version that key
-currently is. Pin it when a template must keep composing against an exact parent.
+Pin a reference when a template must keep composing against an exact parent:
 
 ```
 {% managed_extends "base-email" version=2 %}
@@ -309,6 +308,35 @@ currently is. Pin it when a template must keep composing against an exact parent
 ```
 
 Nothing inside the quoted key is interpreted, so a key is only ever a key.
+
+A reference with **no** version resolves one of two ways:
+
+| `parts` | An unpinned part resolves to | Used by default by |
+|---|---|---|
+| `'latest'` | its newest version, drafts included | `ManagedTemplateService`'s composer: `getComposedTemplate`, `validateComposition`, `renderTemplate` |
+| `'published'` | its newest **active** version | `ManagedTemplateRenderer`'s composer: every send, `render`, `renderManaged` |
+
+So an editor sees the draft base someone is working on, and a recipient never does: a send applies
+the same rule to its parts that it applies to the notification's own key. A part with nothing
+published fails a send with `ManagedTemplateCompositionReferenceError`, so **publish your bases
+and fragments**, not only the templates that extend them.
+
+You do not need two composers to get "preview with drafts, send with published". Pick the mode per
+call with `renderStandalone`, which renders a template with no notification:
+
+```ts
+const template = await service.getTemplate('welcome'); // or an edited copy not saved yet
+const preview = await service.renderStandalone(template, sampleContext, { parts: 'latest' });
+const asSent = await service.renderStandalone(template, sampleContext, { parts: 'published' });
+preview.rendered; // the inner renderer's output: subject, body, ...
+```
+
+The renderer has the same method, composing with its own tag prefix and depth limit. The inner
+renderer is handed a placeholder notification with no ID and no recipient, only `bodyTemplate` (the
+key) and `requestedTemplateVersion`; every renderer shipped with VintaSend needs nothing else to
+render content. To build a composer yourself, `TemplateComposer.fromBackend(backend, { parts })`
+takes the same option, and `composer.withResolver(partResolver(backend, parts))` switches an
+existing one.
 
 ### Checking a template before it ships
 
@@ -328,7 +356,22 @@ service.getTemplateReferences(template); // the bases and fragments it names, un
 | `ManagedTemplateCompositionCycleError` | The references loop |
 | `ManagedTemplateCompositionDepthError` | The chain runs past the composer's `maxDepth` (25 by default) |
 
-All four extend `ManagedTemplateCompositionError`. A missing *reference* is also a missing
+To refuse to publish a version that does not render, let `activate` check it first:
+
+```ts
+await service.activate('welcome', 3, 'ana', { checkRender: { context: sampleContext } });
+```
+
+The check renders version 3 the way a send would: parts at their newest published versions,
+through the renderer's composer and inner renderer. If that throws, nothing is written — the
+version keeps its status and no status history entry (no `Provenance`, on Medplum) is created — and
+`activate` throws `ManagedTemplateRenderCheckError`, with the render failure as `cause` and
+`templateKey` and `version` on it. Its message names the key, the version and the cause's class,
+never the context. `setStatus(key, 'active', version, changedBy, { checkRender })` does the same;
+passing `checkRender` with any other status is a `TypeError`. A version already active is returned
+as it is, unchecked.
+
+All four composition errors extend `ManagedTemplateCompositionError`. A missing *reference* is also a missing
 *template*: Python expresses that with multiple inheritance, which TypeScript has no equivalent
 for, so use `isNotFoundError(error)` when you want to treat the two as one condition — and test for
 `ManagedTemplateCompositionError` **first** where the distinction matters, since a base that does
@@ -377,7 +420,7 @@ the editing view, which includes a draft someone is working on. Sends are the ex
 | | Resolves to | Used by |
 |---|---|---|
 | The editing view | the newest version, whatever its status | `getTemplate(key)`, status changes, tagging, the API's reads |
-| The send path | the newest **`active`** version | `render`, `renderManaged` with no version and no pin, `getLatestTemplateVersion` |
+| The send path | the newest **`active`** version | `render`, `renderManaged` with no version and no pin, `getCurrentTemplateVersion` (which also skips a base) |
 
 A draft is never sent: publishing is the deliberate act that puts a version in front of
 recipients. When several versions of a key are active at once, the **highest-numbered** active one
@@ -403,9 +446,19 @@ notification's own `requestedTemplateVersion`, then the key's newest active vers
 
 `requestedTemplateVersion` is a first-class VintaSend field: pass it to `createNotification`, or
 let the service resolve it for you with `pinTemplateVersions`. This package is what makes it mean
-anything — `getLatestTemplateVersion` is how the service resolves "what would be sent right now",
-and it is overridden here to answer the key's newest active version (or `null` when nothing is
-published).
+anything.
+
+### The version new emails get
+
+```ts
+await service.getCurrentTemplateVersion('welcome'); // or renderer.getCurrentTemplateVersion
+```
+
+answers the key's newest active version, or `null` when nothing is published **or that version is
+abstract** — a base is built on, not sent. It is the one function behind every "current version":
+the renderer's `getLatestTemplateVersion` returns it, and VintaSend calls that for
+`getCurrentTemplateVersion`, `pinTemplateVersions` and `repinNotification` without a version. A
+dashboard showing "the version new emails get" and the library re-pinning to it cannot disagree.
 
 `render` also stamps the version it used onto the payload it returns, as `templateVersion`. An
 adapter returns that payload from `send()`, and the service records it on the notification as

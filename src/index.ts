@@ -1,7 +1,10 @@
 // The storage seam
 export type { BaseTemplateManagerBackend } from './base-template-manager-backend.js';
 export type {
+  TemplateComposerBackend,
+  TemplateComposerBackendOptions,
   TemplateComposerOptions,
+  TemplatePartResolution,
   TemplateReference,
   TemplateResolver,
 } from './composition.js';
@@ -10,6 +13,7 @@ export {
   DEFAULT_MAX_DEPTH,
   DEFAULT_TAG_PREFIX,
   isAbstract,
+  partResolver,
   TemplateComposer,
 } from './composition.js';
 export type {
@@ -40,6 +44,7 @@ export {
   ManagedTemplateInvalidTagError,
   ManagedTemplateNoActiveVersionError,
   ManagedTemplateNotFoundError,
+  ManagedTemplateRenderCheckError,
   ManagedTemplateStatusTransitionError,
   ManagedTemplateTagAlreadyExistsError,
   ManagedTemplateTagNotFoundError,
@@ -119,8 +124,12 @@ export {
   ManagedTemplateRenderer,
   ManagedTemplateTextRenderer,
   requestedTemplateVersion,
+  standaloneNotification,
 } from './managed-template-renderer.js';
-export type { ManagedTemplateServiceOptions } from './managed-template-service.js';
+export type {
+  ManagedTemplateServiceOptions,
+  StatusChangeOptions,
+} from './managed-template-service.js';
 // The service
 export { DEFAULT_STATUS_TRANSITIONS, ManagedTemplateService } from './managed-template-service.js';
 // Tag slugging

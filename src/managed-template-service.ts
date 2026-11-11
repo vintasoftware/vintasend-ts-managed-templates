@@ -45,12 +45,18 @@
 import type { AnyNotification, BaseNotificationTypeConfig, JsonObject } from 'vintasend';
 
 import type { BaseTemplateManagerBackend } from './base-template-manager-backend.js';
-import { TemplateComposer, type TemplateReference } from './composition.js';
+import {
+  partResolver,
+  TemplateComposer,
+  type TemplatePartResolution,
+  type TemplateReference,
+} from './composition.js';
 import type { ManagedTemplateStatus, ManagedTemplateTagStatus } from './constants.js';
 import {
   ManagedTemplateAlreadyExistsError,
   ManagedTemplateInvalidFilterError,
   ManagedTemplateInvalidTagError,
+  ManagedTemplateRenderCheckError,
   ManagedTemplateStatusTransitionError,
   ManagedTemplateUnsupportedOrderingError,
 } from './errors.js';
@@ -71,9 +77,10 @@ import {
   TAG_FILTER_FIELDS,
 } from './filters.js';
 import { assertTemplateVersionDeletable, resolveActiveTemplate } from './lifecycle.js';
-import type {
-  ManagedTemplateRenderer,
-  ManagedTemplateRenderResult,
+import {
+  type ManagedTemplateRenderer,
+  type ManagedTemplateRenderResult,
+  standaloneNotification,
 } from './managed-template-renderer.js';
 import { normalizeTagText, slugifyTag } from './tags.js';
 import { blankToNull, isBlank } from './template-fields.js';
@@ -116,7 +123,12 @@ export type ManagedTemplateServiceOptions = {
   /**
    * The composer that does it. Defaults to one reading through the template manager backend, so
    * composition resolves against the same store the service reads from rather than through
-   * whatever backend the renderer happens to hold.
+   * whatever backend the renderer happens to hold. The default resolves a part named without
+   * `version=` to its newest version, drafts included (`parts: 'latest'`): the editing view.
+   *
+   * The renderer has a composer of its own for sends, which resolves those parts to their newest
+   * *published* version. `renderStandalone` takes either mode per call, so a host previewing
+   * drafts and sending published versions configures neither.
    */
   composer?: TemplateComposer;
   /** A lifecycle other than the default one. */
@@ -130,6 +142,16 @@ export type ManagedTemplateServiceOptions = {
    * hard delete of a published version needs both switched on.
    */
   allowDeletingPublishedVersions?: boolean;
+};
+
+/** Options for `setStatus` and `activate`. */
+export type StatusChangeOptions = {
+  /**
+   * Render the version against `context` before activating it, as a send would render it, and
+   * refuse with `ManagedTemplateRenderCheckError`, writing nothing, if that throws. Only for a move
+   * to `active`; passed with any other status it is a `TypeError`.
+   */
+  checkRender?: { context: JsonObject };
 };
 
 /**
@@ -352,7 +374,14 @@ export class ManagedTemplateService<
     status: ManagedTemplateStatus,
     version: number | null = null,
     changedBy: string | null = null,
+    options: StatusChangeOptions = {},
   ): Promise<ManagedTemplate> {
+    if (options.checkRender !== undefined && status !== 'active') {
+      throw new TypeError(
+        `checkRender applies only when activating a version, not when moving one to '${status}'.`,
+      );
+    }
+
     const template = await this.getTemplate(templateKey, version);
 
     if (template.status === status) {
@@ -360,6 +389,10 @@ export class ManagedTemplateService<
     }
 
     this.checkStatusTransition(template, status);
+
+    if (options.checkRender !== undefined) {
+      await this.checkRender(template, options.checkRender.context);
+    }
 
     await this.templateManagerBackend.createTemplateStatusUpdate({
       templateKey,
@@ -379,13 +412,31 @@ export class ManagedTemplateService<
    * Other versions of the same key that are already active are left alone — a key may hold
    * several active versions at once. An unpinned send renders the highest-numbered active one, so
    * activating an older version while a newer one is active does not change what is sent.
+   *
+   * Pass `{ checkRender: { context } }` to render the version first, the way a send would: its
+   * parts resolved to their newest published versions, through the renderer's composer and inner
+   * renderer. If that throws, the version is not activated and nothing is written; a
+   * `ManagedTemplateRenderCheckError` carries the failure as `cause`.
    */
   async activate(
     templateKey: string,
     version: number | null = null,
     changedBy: string | null = null,
+    options: StatusChangeOptions = {},
   ): Promise<ManagedTemplate> {
-    return this.setStatus(templateKey, 'active', version, changedBy);
+    return this.setStatus(templateKey, 'active', version, changedBy, options);
+  }
+
+  /**
+   * Render `template` against `context` as a send would, or throw
+   * `ManagedTemplateRenderCheckError` without writing anything.
+   */
+  private async checkRender(template: ManagedTemplate, context: JsonObject): Promise<void> {
+    try {
+      await this.templateRenderer.renderStandalone(template, context, { parts: 'published' });
+    } catch (error) {
+      throw new ManagedTemplateRenderCheckError(template.key, template.version, error);
+    }
   }
 
   /** Retire one version without archiving it, so it can be activated again. */
@@ -1026,6 +1077,50 @@ export class ManagedTemplateService<
     version: number | null = null,
   ): Promise<ManagedTemplateRenderResult<RenderedType>> {
     return this.templateRenderer.renderManaged(notification, context, version);
+  }
+
+  /**
+   * Render a template against a context, with no notification.
+   *
+   * What a preview calls, and what `activate`'s `checkRender` calls through the renderer. `parts`
+   * says how a part named without `version=` resolves:
+   *
+   * * `'latest'`: its newest version, drafts included — what an editor previews.
+   * * `'published'`: its newest active version — what a send renders.
+   *
+   * Composed by this service's composer (its tag prefix and depth limit) and its `composeTemplates`
+   * setting, then rendered by the renderer's inner renderer with a placeholder notification that
+   * carries no ID or recipient. One composer serves both modes, so previewing drafts and sending
+   * published needs no second composer.
+   */
+  async renderStandalone(
+    template: ManagedTemplate,
+    context: JsonObject,
+    options: { parts: TemplatePartResolution },
+  ): Promise<ManagedTemplateRenderResult<RenderedType>> {
+    const composed = this.composeTemplates
+      ? await this.composer
+          .withResolver(partResolver(this.templateManagerBackend, options.parts))
+          .compose(template)
+      : template;
+    const content = this.templateRenderer.createTemplateContent(composed);
+    const rendered = await this.templateRenderer.renderFromTemplateContent(
+      standaloneNotification<Config>(template),
+      content,
+      context,
+    );
+    return { key: template.key, version: template.version, rendered };
+  }
+
+  /**
+   * The version new notifications get for `templateKey`: its newest active version, or `null`
+   * when nothing is published or that version is a base.
+   *
+   * The renderer's `getCurrentTemplateVersion`, which is what VintaSend's `repinNotification`
+   * pins to when no version is given, so the two cannot disagree.
+   */
+  async getCurrentTemplateVersion(templateKey: string): Promise<number | null> {
+    return this.templateRenderer.getCurrentTemplateVersion(templateKey);
   }
 
   /**

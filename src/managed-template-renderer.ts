@@ -14,6 +14,11 @@
  * renderer with `composeTemplates: false`, which is the right call only if a store predates
  * composition and holds `managed_`-prefixed text meant to be passed through.
  *
+ * A part a template names without `version=` composes as that part's newest **active** version,
+ * the same rule the notification's own key follows, so a draft base never reaches a recipient.
+ * `renderStandalone` renders a template with no notification and takes the rule per call:
+ * `'published'` for what a send would show, `'latest'` for an editor's preview of drafts.
+ *
  * ## Which version a send renders
  *
  * A notification pinned to a version (`requestedTemplateVersion`) renders that version, whatever
@@ -57,8 +62,13 @@ import {
 } from 'vintasend';
 
 import type { BaseTemplateManagerBackend } from './base-template-manager-backend.js';
-import { TemplateComposer, type TemplateComposerOptions } from './composition.js';
-import { ManagedTemplateNotFoundError } from './errors.js';
+import {
+  partResolver,
+  TemplateComposer,
+  type TemplateComposerBackendOptions,
+  type TemplatePartResolution,
+} from './composition.js';
+import { ManagedTemplateCompositionSyntaxError, ManagedTemplateNotFoundError } from './errors.js';
 import { resolveActiveTemplate } from './lifecycle.js';
 import type { ManagedTemplate } from './types.js';
 
@@ -146,12 +156,18 @@ export type ManagedTemplateRendererOptions<
    */
   composeTemplates?: boolean;
   /**
-   * The composer to resolve them with. Defaults to one reading through the template manager
-   * backend; pass your own to change the tag prefix or the depth limit.
+   * The composer sends resolve them with. Defaults to one reading through the template manager
+   * backend with `parts: 'published'`, so a part named without `version=` composes as its newest
+   * active version — the same rule the notification's own key follows — and a draft base never
+   * reaches a recipient. Pass your own to change that, the tag prefix or the depth limit.
    */
   composer?: TemplateComposer;
-  /** Options for the default composer. Ignored when `composer` is given. */
-  composerOptions?: TemplateComposerOptions;
+  /**
+   * Options for the default composer. Ignored when `composer` is given. `parts` defaults to
+   * `'published'` here; pass `'latest'` to compose sends against draft parts, as 1.0.0-alpha10
+   * and earlier did.
+   */
+  composerOptions?: TemplateComposerBackendOptions;
   /**
    * Defaults to send for keys that have nothing published yet. See the module docs for exactly
    * when one is used.
@@ -180,7 +196,11 @@ export abstract class ManagedTemplateRenderer<
   ) {
     this.composeTemplates = options.composeTemplates ?? true;
     this.composer =
-      options.composer ?? TemplateComposer.fromBackend(managerBackend, options.composerOptions);
+      options.composer ??
+      TemplateComposer.fromBackend(managerBackend, {
+        ...options.composerOptions,
+        parts: options.composerOptions?.parts ?? 'published',
+      });
     this.fallback = options.fallback ?? null;
   }
 
@@ -223,24 +243,95 @@ export abstract class ManagedTemplateRenderer<
   }
 
   /**
-   * The version a notification created now should be pinned to: the key's newest active version.
+   * The version new notifications get: the key's newest active version, unless that is a base.
    *
    * The same version `render` would resolve to if the notification were left unpinned, so a
-   * draft is never pinned. A key with nothing published — no versions, or only drafts and retired
-   * ones — answers `null` rather than throwing: a missing template is the send's problem to
-   * report, and failing here would fail the *creation* of a notification over a template that
-   * might well be published by the time it is sent.
+   * draft is never returned. `null` when the key has nothing published — no versions, or only
+   * drafts and retired ones — and when its newest active version is abstract (a layout with a
+   * `{% managed_children %}` hole or unextended blocks), which is built on rather than sent.
+   * Abstractness is read off the source; with `composeTemplates: false` nothing is abstract.
+   *
+   * VintaSend's `getCurrentTemplateVersion`, `repinNotification` without a version and
+   * `pinTemplateVersions` all reach this through `getLatestTemplateVersion`, so what a dashboard
+   * shows as "the version new emails get" is what they pin.
+   *
+   * Never throws for a missing key: a missing template is the send's problem to report.
    */
-  async getLatestTemplateVersion(templateKey: string): Promise<number | null> {
+  async getCurrentTemplateVersion(templateKey: string): Promise<number | null> {
+    let template: ManagedTemplate;
     try {
-      const template = await this.getActiveTemplate(templateKey);
-      return template.version;
+      template = await this.getActiveTemplate(templateKey);
     } catch (error) {
       if (error instanceof ManagedTemplateNotFoundError) {
         return null;
       }
       throw error;
     }
+    return this.isSendable(template) ? template.version : null;
+  }
+
+  /**
+   * The `BaseNotificationTemplateRenderer` seam VintaSend asks when it pins: the same answer as
+   * {@link getCurrentTemplateVersion}.
+   */
+  async getLatestTemplateVersion(templateKey: string): Promise<number | null> {
+    return this.getCurrentTemplateVersion(templateKey);
+  }
+
+  /**
+   * Whether a template is one to send rather than a base. A source too malformed to parse is not
+   * abstract, as a backend stores it: its send fails with the syntax error, where it is reported.
+   */
+  private isSendable(template: ManagedTemplate): boolean {
+    if (!this.composeTemplates) {
+      return true;
+    }
+    try {
+      return !this.composer.isAbstract(template);
+    } catch (error) {
+      if (error instanceof ManagedTemplateCompositionSyntaxError) {
+        return true;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Render a template against a context, with no notification.
+   *
+   * For previews and for checking a version renders before it is published. `parts` says how a
+   * part named without `version=` resolves: `'latest'`, drafts included, for an editor's preview;
+   * `'published'`, the newest active version, to see what a send would render. The template is
+   * composed with this renderer's tag prefix and depth limit and rendered by its inner renderer,
+   * as a send is.
+   *
+   * The inner renderer is handed a placeholder notification: no ID and no recipient, with
+   * `bodyTemplate` set to the key and `requestedTemplateVersion` to the version. Every renderer
+   * shipped with VintaSend reads nothing else from it when rendering content.
+   *
+   * @throws ManagedTemplateCompositionError if the template cannot be assembled, and whatever the
+   *   inner renderer throws.
+   */
+  async renderStandalone(
+    template: ManagedTemplate,
+    context: JsonObject,
+    options: { parts: TemplatePartResolution },
+  ): Promise<ManagedTemplateRenderResult<RenderedType>> {
+    const composed = this.composeTemplates
+      ? await this.composerFor(options.parts).compose(template)
+      : template;
+    const content = this.createTemplateContent(composed);
+    const rendered = await this.renderFromTemplateContent(
+      standaloneNotification<Config>(template),
+      content,
+      context,
+    );
+    return { key: template.key, version: template.version, rendered };
+  }
+
+  /** This renderer's composer, resolving unpinned parts as `parts` says. */
+  private composerFor(parts: TemplatePartResolution): TemplateComposer {
+    return this.composer.withResolver(partResolver(this.managerBackend, parts));
   }
 
   renderFromTemplateContent(
@@ -379,6 +470,26 @@ export abstract class ManagedTemplateRenderer<
     );
     return withFallbackSource(rendered);
   }
+}
+
+/**
+ * The notification `renderStandalone` hands the inner renderer: nothing but where the template
+ * came from. No ID, no recipient and no context parameters, so nothing about a real notification
+ * can reach a log line the inner renderer writes.
+ */
+export function standaloneNotification<Config extends BaseNotificationTypeConfig>(
+  template: Pick<ManagedTemplate, 'key' | 'version'>,
+): AnyNotification<Config> {
+  return {
+    id: null,
+    bodyTemplate: template.key,
+    subjectTemplate: null,
+    title: null,
+    contextParameters: {},
+    sendAfter: null,
+    extraParams: null,
+    requestedTemplateVersion: template.version,
+  } as unknown as AnyNotification<Config>;
 }
 
 /**

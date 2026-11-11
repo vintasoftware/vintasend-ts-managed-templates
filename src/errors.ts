@@ -57,6 +57,31 @@ export class ManagedTemplateChangeUserNotFoundError extends ManagedTemplateError
 /** Raised when a status change is not allowed from the version's current status. */
 export class ManagedTemplateStatusTransitionError extends ManagedTemplateError {}
 
+/**
+ * Raised when a version was asked to pass a render check before it was activated, and did not.
+ *
+ * Nothing was written: the version keeps its status, and no status history entry (no `Provenance`,
+ * on Medplum) records the attempt. The failure itself is `cause` — a composition error, the
+ * engine's own error, or anything else rendering threw — and the message names the key, the
+ * version and the cause's class only, never the context it was rendered with.
+ */
+export class ManagedTemplateRenderCheckError extends ManagedTemplateError {
+  readonly templateKey: string;
+  readonly version: number;
+  override readonly cause: unknown;
+
+  constructor(templateKey: string, version: number, cause: unknown) {
+    const causeName = cause instanceof Error ? cause.name : typeof cause;
+    super(
+      `Template '${templateKey}' v${version} failed its render check (${causeName}), ` +
+        'so it was not activated.',
+    );
+    this.templateKey = templateKey;
+    this.version = version;
+    this.cause = cause;
+  }
+}
+
 /** Raised when a tag is not found in the backend. */
 export class ManagedTemplateTagNotFoundError extends ManagedTemplateError {}
 
